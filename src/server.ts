@@ -1,33 +1,33 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { ExampleClient, type ExampleClientOptions } from './example/client.js';
-import { registerTools } from './tools/example.js';
+import { TimelogClient, type TimelogClientOptions } from './timelog/client.js';
+import { registerTools } from './tools/timelog.js';
 import { PACKAGE_VERSION } from './version.js';
 
 export interface CreateServerOptions {
-  client?: ExampleClient;
-  clientOptions?: ExampleClientOptions;
+  client?: TimelogClient;
+  clientOptions?: TimelogClientOptions;
 }
 
-let defaultClient: ExampleClient | undefined;
+let defaultClient: TimelogClient | undefined;
 
 /**
  * Process-wide client built from the environment. Sharing it means the
  * outbound concurrency limit applies across all sessions, also when a server
  * instance is created per HTTP request.
  */
-export function getDefaultClient(): ExampleClient {
-  defaultClient ??= new ExampleClient();
+export function getDefaultClient(): TimelogClient {
+  defaultClient ??= new TimelogClient();
   return defaultClient;
 }
 
 export function createServer(options: CreateServerOptions = {}): McpServer {
   const server = new McpServer({
-    name: 'example',
+    name: 'timelog',
     version: PACKAGE_VERSION,
   });
 
   const client =
-    options.client ?? (options.clientOptions ? new ExampleClient(options.clientOptions) : getDefaultClient());
+    options.client ?? (options.clientOptions ? new TimelogClient(options.clientOptions) : getDefaultClient());
   registerTools(server, client);
 
   return server;

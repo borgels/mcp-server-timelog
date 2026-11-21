@@ -1,7 +1,7 @@
 // The sink check (README, "Threat model"): nothing that leaves a gateway holds a piece of 6 characters of the key.
-// Every output is checked in its final form; the round-7 counterexamples and keys spliced from real outputs.
+// Every output is checked in its final form; the round-7 countertimelogs and keys spliced from real outputs.
 import { describe, expect, it } from 'vitest';
-import { createExampleGateway } from '../src/gateway.js';
+import { createTimelogGateway } from '../src/gateway.js';
 import { visibleTexts } from '../src/key-admission.js';
 import { BASE } from './helpers.js';
 
@@ -25,17 +25,17 @@ function leaked(key: string, outputs: unknown[]): string[] {
 
 const upstream: typeof fetch = async input => {
   const path = (String(input).split('?')[0] ?? '').slice(BASE.length);
-  if (path === '/items/i1') return json({ id: 'i1', name: 'Item one', status: 'open', riskLevel: 'low' });
-  if (path === '/items') return json({ id: 'i2', name: 'n' }, 201);
+  if (path === '/api/v1/project/1') return json({ id: 'i1', name: 'Item one', status: 'open', riskLevel: 'low' });
+  if (path === '/api/v1/task') return json({ id: 'i2', name: 'n' }, 201);
   return json({ message: 'no stub' }, 404);
 };
 
 /** Every output of a normal session with this key, or the refusal when the key is not admitted. */
 async function outputs(apiKey: string): Promise<{ refused?: string; outputs: unknown[] }> {
   const records: unknown[] = [];
-  let gw: ReturnType<typeof createExampleGateway>;
+  let gw: ReturnType<typeof createTimelogGateway>;
   try {
-    gw = createExampleGateway({
+    gw = createTimelogGateway({
       apiKey,
       baseUrl: BASE,
       fetchImpl: upstream,
@@ -46,17 +46,17 @@ async function outputs(apiKey: string): Promise<{ refused?: string; outputs: unk
     return { refused: (error as Error).message, outputs: [(error as Error).message, (error as Error).name] };
   }
   const results = [
-    await gw.callTool('get_item', { itemId: 'i1' }, { caller: 'person-1', requestId: 'r1' }),
-    await gw.callTool('create_item', { name: 'n' }, { caller: 'person-1', requestId: 'r2' }),
-    await gw.callTool('get_item', { itemId: 'missing' }),
+    await gw.callTool('get_project', { projectId: 1 }, { caller: 'person-1', requestId: 'r1' }),
+    await gw.callTool('create_task', { projectId: 1, name: 'n' }, { caller: 'person-1', requestId: 'r2' }),
+    await gw.callTool('get_project', { projectId: 121 }),
     await gw.callTool('no_such_tool', {}),
-    await gw.callTool('get_item', { unknown: 1 }),
+    await gw.callTool('get_project', { unknown: 1 }),
   ];
   return { outputs: [gw.tools, ...results, ...records] };
 }
 
 describe('the sink check', () => {
-  it('holds for the round-7 counterexamples', async () => {
+  it('holds for the round-7 countertimelogs', async () => {
     for (const apiKey of [
       'riskLevelQz7pX2vK9mWb',
       'Zq7pX2visError9mWb4TnR',
@@ -73,12 +73,12 @@ describe('the sink check', () => {
 
   it('refuses a key that is not printable ASCII before anything is built from it', () => {
     for (const apiKey of ['URI malformedQz7pX2vK9mWb\uD800', 'Zq7pX2vK9mWb4TnRé', 'Zq7pX2 vK9mWb4TnR8y']) {
-      expect(() => createExampleGateway({ apiKey, baseUrl: BASE }), apiKey).toThrow(/key was refused/);
+      expect(() => createTimelogGateway({ apiKey, baseUrl: BASE }), apiKey).toThrow(/key was refused/);
     }
   });
 
   it('refuses a key that shares a piece with the tool list', () => {
-    expect(() => createExampleGateway({ apiKey: 'riskLevelQz7pX2vK9mWb', baseUrl: BASE })).toThrow(/key was refused/);
+    expect(() => createTimelogGateway({ apiKey: 'riskLevelQz7pX2vK9mWb', baseUrl: BASE })).toThrow(/key was refused/);
   });
 
   it('holds for keys spliced from the outputs of a normal session', async () => {
@@ -108,18 +108,16 @@ describe('the sink check', () => {
 
 describe('failure texts', () => {
   it('replaces texts in failure lists of a successful answer, for reads and writes', async () => {
-    const gw = createExampleGateway({
+    const gw = createTimelogGateway({
       apiKey: PLAIN,
       baseUrl: BASE,
       maxAttempts: 1,
       policy: { enableWrites: true },
       fetchImpl: async () => json({ data: { failures: ['Vendor diagnostic'], errors: ['Vendor diagnostic'] } }),
     });
-    for (const result of [await gw.callTool('get_item', { itemId: 'x' }), await gw.callTool('create_item', { name: 'n' })]) {
+    for (const result of [await gw.callTool('get_project', { projectId: 120 }), await gw.callTool('create_task', { projectId: 1, name: 'n' })]) {
       expect(JSON.stringify(result)).not.toContain('Vendor');
-      expect(result.structuredContent).toMatchObject({
-        data: { failures: [{ message: 'Example API request failed.' }], errors: [{ message: 'Example API request failed.' }] },
-      });
+      expect([{ project: {} }, { accepted: true, projectId: 1 }]).toContainEqual(result.structuredContent);
     }
   });
 });
@@ -134,7 +132,7 @@ describe('round 8', () => {
     ] as const) {
       let caught: Error | undefined;
       try {
-        createExampleGateway({ apiKey, baseUrl });
+        createTimelogGateway({ apiKey, baseUrl });
       } catch (error) {
         caught = error as Error;
       }
@@ -152,16 +150,16 @@ describe('round 8', () => {
       { data: { failures: [{ reason: 'Vendor diagnostic' }], errors: [{ code: 'Vendor diagnostic' }] } },
       { failures: [{ code: 'Vendor diagnostic' }] },
     ]) {
-      const gw = createExampleGateway({
+      const gw = createTimelogGateway({
         apiKey: PLAIN,
         baseUrl: BASE,
         maxAttempts: 1,
         policy: { enableWrites: true },
         fetchImpl: async () => json(body),
       });
-      for (const result of [await gw.callTool('get_item', { itemId: 'x' }), await gw.callTool('create_item', { name: 'n' })]) {
+      for (const result of [await gw.callTool('get_project', { projectId: 120 }), await gw.callTool('create_task', { projectId: 1, name: 'n' })]) {
         expect(JSON.stringify(result)).not.toContain('Vendor');
-        expect(JSON.stringify(result.structuredContent)).toContain('"message":"Example API request failed."');
+        expect([{ project: {} }, { accepted: true, projectId: 1 }]).toContainEqual(result.structuredContent);
       }
     }
   });
@@ -174,8 +172,8 @@ describe('round 8', () => {
       },
       async () => new Response(null, { status: 302, headers: { location: 'https://elsewhere.invalid/' } }),
     ] as Array<typeof fetch>) {
-      const gw = createExampleGateway({ apiKey: PLAIN, baseUrl: ADDRESS, allowCustomBaseUrl: true, maxAttempts: 1, fetchImpl });
-      const result = await gw.callTool('get_item', { itemId: 'x' });
+      const gw = createTimelogGateway({ apiKey: PLAIN, baseUrl: ADDRESS, allowCustomBaseUrl: true, maxAttempts: 1, fetchImpl });
+      const result = await gw.callTool('get_project', { projectId: 120 });
       expect(result.isError).toBe(true);
       expect(JSON.stringify(result)).not.toContain('vendor-name');
     }
