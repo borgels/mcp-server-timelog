@@ -423,37 +423,6 @@ export const TIMELOG_TOOLS: ToolDefinition[] = [
     upstream: [{ access: 'write', method: 'POST', path: '/api/v1/project/create-from-template' }],
     handler: async (client, input) => api.createProject(client, input),
   }),
-  defineTool({
-    name: 'timelog_update_project',
-    title: 'Update Project (TimeLog)',
-    description:
-      "Change a project's name, description, project manager or budgeted hours. Everything else stays as it is. Does not close or delete the project.",
-    inputShape: {
-      projectId: idSchema.describe('ProjectID.'),
-      name: z.string().trim().min(1).max(200).optional().describe('New name.'),
-      description: z.string().trim().max(4000).optional().describe('New description.'),
-      projectManagerId: idSchema.optional().describe('New project manager (UserID).'),
-      budgetHours: z.number().min(0).max(1_000_000).optional().describe('New budgeted hours.'),
-    },
-    annotations: UPDATE_TOOL_ANNOTATIONS,
-    returnsUpstreamContent: false,
-    summary: 'Updated project.',
-    upstream: [
-      { access: 'read', method: 'GET', path: '/api/v1/project/{projectId}' },
-      { access: 'write', method: 'PUT', path: '/api/v1/project/{projectId}' },
-    ],
-    handler: async (client, input) => {
-      if (
-        input.name === undefined &&
-        input.description === undefined &&
-        input.projectManagerId === undefined &&
-        input.budgetHours === undefined
-      ) {
-        throw new Error('Give at least one field to change.');
-      }
-      return api.updateProject(client, input);
-    },
-  }),
 ];
 
 export function findTool(name: string): ToolDefinition | undefined {

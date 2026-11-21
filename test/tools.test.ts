@@ -191,7 +191,6 @@ describe('gateway export', () => {
       ['update_time', 'write', false],
       ['create_task', 'write', false],
       ['create_project', 'write', false],
-      ['update_project', 'write', false],
     ]);
     const ajv = new Ajv({ strict: true });
     for (const tool of timelogGatewayTools) {

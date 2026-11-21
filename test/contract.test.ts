@@ -303,7 +303,7 @@ describe('reads, shaped as TimeLog answers', () => {
   it('list_time_registrations returns the token user\'s registrations and absence without its reason', async () => {
     const { gw, calls } = upstream({ 'GET /api/v1/time-tracking-item/get-by-date': { body: list([WORK, ABSENCE]) } });
     const result = await gw.callTool('list_time_registrations', { fromDate: '2026-11-02', toDate: '2026-11-06' });
-    expect(calls[0]?.query).toEqual({ startDate: '2026-11-02', endDate: '2026-11-06' });
+    expect(calls[0]?.query).toEqual({ startDate: '2026-11-02', endDate: '2026-11-06', $page: '1', $pagesize: '500' });
     const data = result.structuredContent as { registrations: Array<Record<string, unknown>>; count: number };
     expect(data.count).toBe(2);
     expect(data.registrations[0]).toMatchObject({ TimeRegistrationID: 77, Hours: 2.5, TaskName: 'Design', Comment: 'Skitser' });
@@ -356,6 +356,33 @@ describe('reads, shaped as TimeLog answers', () => {
         { date: '2026-11-04', hours: 7.4 },
       ],
     });
+  });
+
+  it('time_summary and list_time_registrations read every page of the period before they sum', async () => {
+    const pageOne = { ...list([{ ...WORK, Hours: 2, BillableHours: 2 }]), Properties: { TotalRecord: '2', TotalPage: '2', PageNumber: '1' } };
+    const pageTwo = { ...list([{ ...WORK, TimeRegistrationID: 80, Hours: 3, BillableHours: 0 }]), Properties: { TotalRecord: '2', TotalPage: '2', PageNumber: '2' } };
+    const pages: string[] = [];
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const page = new URL(String(input)).searchParams.get('$page');
+      pages.push(page ?? '');
+      return Response.json(page === '2' ? pageTwo : pageOne);
+    });
+    const gw = createTimelogGateway({ apiKey: KEY, baseUrl: BASE, fetchImpl: fetchImpl as unknown as typeof fetch, maxAttempts: 1, policy: {} });
+    const summary = await gw.callTool('time_summary', { fromDate: '2026-11-02', toDate: '2026-11-06' });
+    expect(summary.structuredContent).toMatchObject({ totalHours: 5, billableHours: 2, registrations: 2 });
+    expect(summary.structuredContent).not.toHaveProperty('incomplete');
+    const listed = await gw.callTool('list_time_registrations', { fromDate: '2026-11-02', toDate: '2026-11-06' });
+    expect(listed.structuredContent).toMatchObject({ count: 2 });
+    expect(pages).toEqual(['1', '2', '1', '2']);
+  });
+
+  it('says a period is incomplete when TimeLog reports more pages than are read', async () => {
+    const endless = { ...list([{ ...WORK, Hours: 1 }]), Properties: { TotalRecord: '99999', TotalPage: '9999', PageNumber: '1' } };
+    const fetchImpl = vi.fn(async () => Response.json(endless));
+    const gw = createTimelogGateway({ apiKey: KEY, baseUrl: BASE, fetchImpl: fetchImpl as unknown as typeof fetch, maxAttempts: 1, policy: {} });
+    const summary = await gw.callTool('time_summary', { fromDate: '2026-01-01', toDate: '2026-12-31' });
+    expect(summary.structuredContent).toMatchObject({ incomplete: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(40);
   });
 
   it('timesheet_status lists weekly status per employee', async () => {
@@ -434,13 +461,27 @@ describe('changes, shaped as TimeLog takes them', () => {
     });
   });
 
-  it('update_time keeps the billable hours when only the comment changes', async () => {
+  it('update_time keeps the billable hours, the monthly period and the times when only the comment changes', async () => {
     const { gw, calls } = upstream({
-      'GET /api/v1/time-tracking-item/77': { body: single({ ...WORK, BillableHours: 2 }) },
+      'GET /api/v1/time-tracking-item/77': {
+        body: single({ ...WORK, BillableHours: 2, MonthlyPeriod: '2026-11', StartTime: '2026-11-03T08:00:00', EndTime: '2026-11-03T10:30:00' }),
+      },
       'POST /api/v1/time-registration/update-time': { body: {} },
     });
     await gw.callTool('update_time', { timeRegistrationId: 77, comment: 'Rettet' });
-    expect(calls[1]?.body).toMatchObject({ Hours: 2.5, BillableHours: 2, Comment: 'Rettet' });
+    expect(calls[1]?.body).toEqual({
+      TimeRegistrationID: 77,
+      TaskID: 5,
+      Date: '2026-11-03T00:00:00',
+      Hours: 2.5,
+      Billable: true,
+      BillableHours: 2,
+      Comment: 'Rettet',
+      AdditionalComment: '',
+      MonthlyPeriod: '2026-11',
+      StartTime: '2026-11-03T08:00:00',
+      EndTime: '2026-11-03T10:30:00',
+    });
   });
 
   it('update_time does not change an absence and needs a field to change', async () => {
@@ -479,29 +520,12 @@ describe('changes, shaped as TimeLog takes them', () => {
     });
   });
 
-  it('update_project reads the project and sends back every other field, the amount included but never returned', async () => {
-    const { gw, calls } = upstream({
-      'GET /api/v1/project/1': { body: single(PROJECT) },
-      'PUT /api/v1/project/1': { body: {} },
-    });
-    const result = await gw.callTool('update_project', { projectId: 1, budgetHours: 400 });
-    expect(calls[1]?.body).toEqual({
-      Name: 'Ny hjemmeside',
-      ProjectNo: 'P-2026-01',
-      CustomerID: 3,
-      ContactID: 4,
-      Description: 'Design og udvikling',
-      DepartmentID: 2,
-      ProjectManagerID: 9,
-      AccountManagerID: 10,
-      PartnerID: 11,
-      ProjectTypeID: 1,
-      ProjectCategoryID: 1,
-      BudgetWorkHours: 400,
-      BudgetWorkAmount: 296000,
-    });
-    expect(result.structuredContent).toEqual({ accepted: true, projectId: 1, changed: ['budgetHours'] });
-    expect(JSON.stringify(result)).not.toMatch(MONEY);
+  it('has no tool that changes, closes or deletes a project', async () => {
+    const { gw, calls } = upstream({});
+    for (const tool of ['update_project', 'delete_project', 'set_project_status']) {
+      expect((await gw.callTool(tool, { projectId: 1 })).isError, tool).toBe(true);
+    }
+    expect(calls).toHaveLength(0);
   });
 
   it('a refused change is an error with the status only, never TimeLog\'s text', async () => {

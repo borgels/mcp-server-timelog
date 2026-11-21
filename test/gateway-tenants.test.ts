@@ -190,7 +190,6 @@ const SAMPLE_INPUTS: Record<string, Record<string, unknown>> = {
   update_time: { timeRegistrationId: 77, hours: 2 },
   create_task: { projectId: 1, name: 'New task', parentTaskId: 5 },
   create_project: { templateId: 2, name: 'New project', customerId: 3 },
-  update_project: { projectId: 1, name: 'Renamed' },
 };
 
 describe('tool catalog', () => {

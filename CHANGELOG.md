@@ -6,8 +6,8 @@
   token, built from the MCP server template. Reads of projects, project
   templates, tasks, customers, employees, the token user's time
   registrations, a time summary and weekly timesheet status; writes that
-  register and correct time and create tasks and projects, and change a
-  project's name, description, project manager or budgeted hours.
+  register and correct time and create tasks and projects. Period reads
+  read every page before they sum.
 - Results are reduced to a list of fields per object: no amounts, hourly
   rates, cost prices or salaries, and absence without its code, name or
   comment. Nothing deletes.

@@ -33,9 +33,8 @@ It authenticates with a **personal access token (PAT)**, which has the rights of
 | `timelog_update_time` *(write)* | Correct a registration: hours, day, task, comment or billable. Other fields are kept. |
 | `timelog_create_task` *(write)* | Create a task or a sub-task on a project. |
 | `timelog_create_project` *(write)* | Create a project for a customer from a template. |
-| `timelog_update_project` *(write)* | Change a project's name, description, project manager or budgeted hours. |
 
-`update_time` and `update_project` read the record first and send back every field they do not change, because TimeLog's update replaces them.
+`update_time` reads the registration first and sends back every field it does not change, because TimeLog's update replaces them. Projects can be created but not changed: TimeLog's project update replaces every field, and its read model does not include all of them (the invoice language), so a change could reset one. Period reads (`list_time_registrations`, `time_summary`) read every page before they sum; a result says `incomplete: true` if TimeLog reports more than 40 pages of 500.
 
 ## Quick start
 
@@ -214,7 +213,7 @@ on as the API returned them.
 - **One shared identity.** Every caller acts with the rights of the configured API key. Give it the least rights that work and rotate it regularly.
 - **Per-user authorization belongs in front of the server.** The server checks a single bearer token and does not know the end user. For multi-user use, run it behind an identity-aware gateway that decides which users may call which tools, holds the bearer token, and is the only network path to the server. Hosts can also embed the tools through the `./gateway` module export and pass the caller identity into the audit log.
 - **Tool access is not data access.** A gateway controls who may call which tool; every permitted caller still sees everything the API key can see. To separate data, run several instances with different keys.
-- **Writes are off by default.** Write tools are annotated as destructive so clients can ask for confirmation. Read-only tools get a client that refuses non-GET requests. When `TIMELOG_AUDIT_LOG` is set, a write tool does not run unless its start record is written; without it there is no audit record.
+- **Writes are off by default.** Write tools are annotated as writes (`readOnlyHint: false`); none deletes, so none is marked destructive. Clients can still ask for confirmation before any write. Read-only tools get a client that refuses non-GET requests. When `TIMELOG_AUDIT_LOG` is set, a write tool does not run unless its start record is written; without it there is no audit record.
 - **Upstream content is untrusted input.** Data returned by the API may be written by anyone with access to it. Tool results label it as data; clients that combine this server with other tools should treat it accordingly.
 - **The API key stays on the API origin.** Redirects are never followed, the base URL must use `https`, and error messages and audit records are redacted (by each instance, with that instance's key) and size-capped. See the threat model above for what is and is not guaranteed.
 - **The HTTP transport fails closed.** It refuses to start on a non-loopback address or with any origin allowed unless a token is set, compares tokens in constant time, throttles failed authentication per client address, checks `Origin` and `Host` (DNS rebinding), and caps request bodies.

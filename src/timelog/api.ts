@@ -332,16 +332,36 @@ export interface Period {
   toDate: string;
 }
 
-async function ownRegistrations(client: UpstreamClient, input: Period): Promise<Json[]> {
-  const { items } = unwrapList(
-    await client.get(`${API}/time-tracking-item/get-by-date`, { startDate: input.fromDate, endDate: input.toDate }),
-  );
-  return reduceAll(items, timeRegistration);
+/** Pages of 500 read for a period; a year of one person's registrations fits well within this. */
+const PERIOD_PAGE_SIZE = 500;
+const MAX_PERIOD_PAGES = 40;
+
+/**
+ * Every registration of the token's user in a period: all pages of the TAFList, so a total is never taken from the
+ * first page only. `complete` is false only when TimeLog reports more pages than MAX_PERIOD_PAGES.
+ */
+async function ownRegistrations(client: UpstreamClient, input: Period): Promise<{ registrations: Json[]; complete: boolean }> {
+  const registrations: Json[] = [];
+  for (let page = 1; page <= MAX_PERIOD_PAGES; page += 1) {
+    const { items, paging } = unwrapList(
+      await client.get(`${API}/time-tracking-item/get-by-date`, {
+        startDate: input.fromDate,
+        endDate: input.toDate,
+        $page: page,
+        $pagesize: PERIOD_PAGE_SIZE,
+      }),
+    );
+    registrations.push(...reduceAll(items, timeRegistration));
+    // Without paging information (a plain list) or on the last page, the period is complete.
+    const pages = paging.totalPages;
+    if (pages === undefined || page >= pages || items.length === 0) return { registrations, complete: true };
+  }
+  return { registrations, complete: false };
 }
 
 export async function listTimeRegistrations(client: UpstreamClient, input: Period): Promise<unknown> {
-  const registrations = await ownRegistrations(client, input);
-  return { fromDate: input.fromDate, toDate: input.toDate, registrations, count: registrations.length };
+  const { registrations, complete } = await ownRegistrations(client, input);
+  return { fromDate: input.fromDate, toDate: input.toDate, registrations, count: registrations.length, ...(complete ? {} : { incomplete: true }) };
 }
 
 export async function getTimeRegistration(client: UpstreamClient, input: { timeRegistrationId: number }): Promise<unknown> {
@@ -359,7 +379,7 @@ function round2(value: number): number {
 
 /** Hours of the token's user in a period: in total, billable, by project, by task and by day; absence as one sum. */
 export async function timeSummary(client: UpstreamClient, input: Period): Promise<unknown> {
-  const registrations = await ownRegistrations(client, input);
+  const { registrations, complete } = await ownRegistrations(client, input);
   let total = 0;
   let billable = 0;
   let absence = 0;
@@ -397,6 +417,7 @@ export async function timeSummary(client: UpstreamClient, input: Period): Promis
     byProject: sorted(byProject.values()),
     byTask: sorted(byTask.values()),
     byDay: [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([date, hours]) => ({ date, hours: round2(hours) })),
+    ...(complete ? {} : { incomplete: true }),
   };
 }
 
@@ -500,6 +521,7 @@ export async function updateTime(client: UpstreamClient, input: UpdateTimeInput)
     Comment: input.comment ?? (typeof current.Comment === 'string' ? current.Comment : ''),
   };
   if (typeof current.AdditionalTextField === 'string') body.AdditionalComment = current.AdditionalTextField;
+  if (typeof current.MonthlyPeriod === 'string') body.MonthlyPeriod = current.MonthlyPeriod;
   if (typeof current.StartTime === 'string' && input.hours === undefined) body.StartTime = current.StartTime;
   if (typeof current.EndTime === 'string' && input.hours === undefined) body.EndTime = current.EndTime;
   return changeResult(await client.post(`${API}/time-registration/update-time`, body), timeRegistration, {
@@ -562,56 +584,4 @@ export async function createProject(client: UpstreamClient, input: CreateProject
     value => pick(value, CREATED_PROJECT_FIELDS),
     { templateId: input.templateId, customerId: input.customerId },
   );
-}
-
-export interface UpdateProjectInput {
-  projectId: number;
-  name?: string;
-  description?: string;
-  projectManagerId?: number;
-  budgetHours?: number;
-}
-
-/** The fields of TimeLog's project update, from the project as read (the update replaces them all). */
-const PROJECT_UPDATE_FIELDS: ReadonlyArray<[update: string, read: string]> = [
-  ['Name', 'Name'],
-  ['ProjectNo', 'No'],
-  ['CustomerID', 'CustomerID'],
-  ['ContactID', 'ContactID'],
-  ['Description', 'Description'],
-  ['DepartmentID', 'DepartmentID'],
-  ['ProjectManagerID', 'ProjectManagerID'],
-  ['AccountManagerID', 'AccountManagerID'],
-  ['PartnerID', 'PartnerID'],
-  ['ProjectTypeID', 'ProjectTypeID'],
-  ['ProjectCategoryID', 'ProjectCategoryID'],
-  ['BudgetWorkHours', 'BudgetWorkHours'],
-  ['BudgetWorkAmount', 'BudgetWorkAmount'],
-];
-
-/**
- * Change a project's name, description, project manager or budgeted hours.
- * The project is read first and every other field is sent back as it was;
- * the budgeted amount is sent back unchanged and never returned.
- */
-export async function updateProject(client: UpstreamClient, input: UpdateProjectInput): Promise<unknown> {
-  const id = encodePathParam(input.projectId, 'projectId');
-  const current = unwrapSingle(await client.get(`${API}/project/${id}`));
-  if (!isObject(current)) {
-    throw new Error('The project could not be read; nothing was changed.');
-  }
-  const body: Json = {};
-  for (const [field, read] of PROJECT_UPDATE_FIELDS) {
-    const value = current[read];
-    if (value !== undefined && (value === null || typeof value !== 'object')) body[field] = value;
-  }
-  if (input.name !== undefined) body.Name = input.name;
-  if (input.description !== undefined) body.Description = input.description;
-  if (input.projectManagerId !== undefined) body.ProjectManagerID = input.projectManagerId;
-  if (input.budgetHours !== undefined) body.BudgetWorkHours = input.budgetHours;
-  await client.put(`${API}/project/${id}`, body);
-  const changed = ['name', 'description', 'projectManagerId', 'budgetHours'].filter(
-    field => (input as unknown as Json)[field] !== undefined,
-  );
-  return { accepted: true, projectId: input.projectId, changed };
 }

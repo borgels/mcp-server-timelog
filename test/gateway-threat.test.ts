@@ -107,11 +107,21 @@ describe('round 5 of the threat model, through callTool', () => {
       apiKey: LOOKALIKE,
       baseUrl: BASE,
       maxAttempts: 1,
-      fetchImpl: async () => json({ echo: LOOKALIKE, [LOOKALIKE]: 1 }),
+      // The lookalike in fields that reach a result through the allow-list, and in a key that does not.
+      fetchImpl: async () =>
+        json({
+          Properties: { TotalRecord: '1', TotalPage: '1', PageNumber: '1' },
+          Entities: [{ Properties: { ProjectID: 1, Name: LOOKALIKE, No: `P ${LOOKALIKE}`, Description: LOOKALIKE, [LOOKALIKE]: 1 } }],
+        }),
       policy: { audit: r => void records.push(r) },
     });
-    const result = await gw.callTool('get_project', { projectId: LOOKALIKE }, { caller: LOOKALIKE });
-    const text = JSON.stringify([result, records]);
+    // The query goes upstream and into the audit as a hash; the caller into the audit; the fields into the result.
+    const listed = await gw.callTool('list_projects', { query: LOOKALIKE }, { caller: LOOKALIKE, requestId: LOOKALIKE });
+    expect(listed.isError).toBeUndefined();
+    expect(JSON.stringify(listed.structuredContent)).toContain('‹redacted›');
+    const result = await gw.callTool('get_project', { projectId: 1 }, { caller: LOOKALIKE });
+    const rejected = await gw.callTool('get_project', { projectId: LOOKALIKE }, { caller: LOOKALIKE });
+    const text = JSON.stringify([listed, result, rejected, records]);
     for (const piece of pieces(LOOKALIKE)) expect(text, piece).not.toContain(piece);
   });
 

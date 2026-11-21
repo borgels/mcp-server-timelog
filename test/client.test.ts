@@ -13,6 +13,17 @@ afterEach(() => {
 
 const BASE = 'https://app1.timelog.com/demo';
 
+describe('the hosts the token may be sent to', () => {
+  it('takes an address on timelog.com and refuses any other host, unless explicitly allowed', () => {
+    expect(() => new TimelogClient({ apiKey: 'k', baseUrl: 'https://app4.timelog.com/demobyg' })).not.toThrow();
+    expect(() => new TimelogClient({ apiKey: 'k', baseUrl: 'https://timelog.com/demobyg' })).not.toThrow();
+    for (const baseUrl of ['https://app1.timelog.com.evil.test/demo', 'https://eviltimelog.com/demo', 'https://api.vendor.test/v1', 'http://app1.timelog.com/demo']) {
+      expect(() => new TimelogClient({ apiKey: 'k', baseUrl }), baseUrl).toThrow();
+    }
+    expect(() => new TimelogClient({ apiKey: 'k', baseUrl: 'https://api.vendor.test/v1', allowCustomBaseUrl: true })).not.toThrow();
+  });
+});
+
 type Handler = (url: string, init?: RequestInit) => Response | unknown | Promise<Response | unknown>;
 
 function makeFetch(handler: Handler) {
