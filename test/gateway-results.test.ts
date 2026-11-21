@@ -143,6 +143,15 @@ describe('redactDeep', () => {
     expect(JSON.stringify(redactDeep([value], redactor))).toContain('[nested too deep]');
     expect(leaks(redactDeep([value], redactor))).toEqual([]);
   });
+
+  it('redacts the key in object keys at any depth, and in the string form of numbers, before anything is serialised', () => {
+    const redactor = new SecretRedactor().addSecret(KEY);
+    const value = { [KEY]: 1, nested: { [`prefix ${KEY}`]: [{ [KEY.slice(2, 10)]: KEY }] }, list: [{ [KEY]: { [KEY]: true } }] };
+    const redacted = redactDeep(value, redactor);
+    expect(leaks(redacted)).toEqual([]);
+    expect(JSON.stringify(redacted)).toContain('‹redacted›');
+    expect(JSON.parse(JSON.stringify(redacted))).toEqual(redacted);
+  });
 });
 
 describe('the data in the text block', () => {
