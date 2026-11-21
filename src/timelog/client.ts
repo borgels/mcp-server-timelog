@@ -1,11 +1,11 @@
 import { ConfigError, readEnvBoolean, readEnvInteger, readEnvString, type Env } from '../config-env.js';
-import { ExampleHttpError, describeUrl, parseRetryAfterMs, SecretRedactor } from '../errors.js';
+import { TimelogHttpError, describeUrl, parseRetryAfterMs, SecretRedactor } from '../errors.js';
 import { USER_AGENT } from '../version.js';
 
-export interface ExampleClientOptions {
-  /** API key. When omitted, read from EXAMPLE_API_KEY in `credentialEnv`. */
+export interface TimelogClientOptions {
+  /** Personal access token. When omitted, read from TIMELOG_API_KEY in `credentialEnv`. */
   apiKey?: string;
-  /** API base URL. When omitted, read from EXAMPLE_BASE_URL in `credentialEnv`. */
+  /** The account's address, https://app<n>.timelog.com/<account>. When omitted, read from TIMELOG_BASE_URL in `credentialEnv`. */
   baseUrl?: string;
   /**
    * Where omitted credentials (apiKey, baseUrl) are read from. Defaults to
@@ -14,11 +14,11 @@ export interface ExampleClientOptions {
    */
   credentialEnv?: Env;
   fetchImpl?: typeof fetch;
-  /** Per-attempt timeout covering headers and body (default 30 s, env EXAMPLE_TIMEOUT_MS). */
+  /** Per-attempt timeout covering headers and body (default 30 s, env TIMELOG_TIMEOUT_MS). */
   timeoutMs?: number;
-  /** Maximum number of concurrent upstream requests from this client (default 4, env EXAMPLE_MAX_CONCURRENCY). */
+  /** Maximum number of concurrent upstream requests from this client (default 4, env TIMELOG_MAX_CONCURRENCY). */
   maxConcurrency?: number;
-  /** Largest successful response body read, in bytes (default 10 MB, env EXAMPLE_MAX_RESPONSE_BYTES). */
+  /** Largest successful response body read, in bytes (default 10 MB, env TIMELOG_MAX_RESPONSE_BYTES). */
   maxResponseBytes?: number;
   /** Total attempts for idempotent GETs on 429/502/503/504 and transient network errors (default 3). */
   maxAttempts?: number;
@@ -30,7 +30,7 @@ export interface ExampleClientOptions {
    * the response is returned to the caller instead.
    */
   retryBudgetMs?: number;
-  /** Allow a base URL outside UPSTREAM_HOST_SUFFIXES (env EXAMPLE_ALLOW_CUSTOM_BASE_URL=true). */
+  /** Allow a base URL outside UPSTREAM_HOST_SUFFIXES (env TIMELOG_ALLOW_CUSTOM_BASE_URL=true). */
   allowCustomBaseUrl?: boolean;
   /** Injectable for tests. */
   sleep?: (ms: number) => Promise<void>;
@@ -38,17 +38,20 @@ export interface ExampleClientOptions {
 
 export type QueryValue = string | number | boolean | null | undefined;
 
-type HttpMethod = 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
-
-/** Header that carries the API key. Change it to match the upstream API; error text redaction follows it. */
-export const API_KEY_HEADER = 'X-API-Key';
+type HttpMethod = 'GET' | 'POST' | 'PUT';
 
 /**
- * Hosts the API key may be sent to (exact host or any subdomain), e.g.
- * ['api.vendor.com']. Empty: any https host. Loopback http is always allowed
- * for local mocks.
+ * Header that carries the personal access token, as `Bearer <token>` (TimeLog REST API, "Personal Access Tokens").
+ * Error text redaction follows it.
  */
-export const UPSTREAM_HOST_SUFFIXES: readonly string[] = [];
+export const API_KEY_HEADER = 'Authorization';
+
+/**
+ * Hosts the token may be sent to (exact host or any subdomain). A TimeLog
+ * account lives at https://app<n>.timelog.com/<account>. Loopback http is
+ * always allowed for local mocks.
+ */
+export const UPSTREAM_HOST_SUFFIXES: readonly string[] = ['timelog.com'];
 
 export const DEFAULT_MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
 const MAX_RESPONSE_BYTES_LIMIT = 100 * 1024 * 1024;
@@ -103,7 +106,7 @@ const TRANSIENT_NETWORK_CODES = new Set([
 export interface UpstreamClient {
   get<T>(path: string, query?: Record<string, QueryValue>): Promise<T>;
   post<T>(path: string, body?: unknown, query?: Record<string, QueryValue>): Promise<T>;
-  patch<T>(path: string, body?: unknown): Promise<T>;
+  put<T>(path: string, body?: unknown): Promise<T>;
 }
 
 /**
@@ -118,12 +121,12 @@ export function readOnlyClient(client: UpstreamClient, toolName: string): Upstre
   return {
     get: (path, query) => client.get(path, query),
     post: refuse('POST'),
-    patch: refuse('PATCH'),
+    put: refuse('PUT'),
   };
 }
 
 /**
- * Client for the upstream API. Authenticates with a single API key header.
+ * Client for the TimeLog REST API. Authenticates with a personal access token as a bearer token.
  *
  * Redirects are never followed, so the key cannot be forwarded to another
  * origin. Idempotent GETs are retried with backoff on throttling, gateway
@@ -135,7 +138,7 @@ export function readOnlyClient(client: UpstreamClient, toolName: string): Upstre
  * errors raised by the client, and the audit and tool results of calls
  * made through it, are redacted with it.
  */
-export class ExampleClient implements UpstreamClient {
+export class TimelogClient implements UpstreamClient {
   readonly redactor: SecretRedactor;
   private readonly apiKey?: string;
   readonly baseUrl?: string;
@@ -148,30 +151,30 @@ export class ExampleClient implements UpstreamClient {
   private readonly semaphore: Semaphore;
   private readonly sleep: (ms: number) => Promise<void>;
 
-  constructor(options: ExampleClientOptions = {}) {
+  constructor(options: TimelogClientOptions = {}) {
     const credentialEnv = options.credentialEnv ?? process.env;
-    this.apiKey = options.apiKey ?? readEnvString('EXAMPLE_API_KEY', credentialEnv);
+    this.apiKey = options.apiKey ?? readEnvString('TIMELOG_API_KEY', credentialEnv);
     this.redactor = new SecretRedactor().addHeader(API_KEY_HEADER).addSecret(this.apiKey);
-    const baseUrl = options.baseUrl ?? readEnvString('EXAMPLE_BASE_URL', credentialEnv);
+    const baseUrl = options.baseUrl ?? readEnvString('TIMELOG_BASE_URL', credentialEnv);
     if (baseUrl !== undefined) {
       this.baseUrl = trimTrailingSlash(baseUrl);
       assertSafeBaseUrl(
         this.baseUrl,
-        options.allowCustomBaseUrl ?? readEnvBoolean('EXAMPLE_ALLOW_CUSTOM_BASE_URL', false),
+        options.allowCustomBaseUrl ?? readEnvBoolean('TIMELOG_ALLOW_CUSTOM_BASE_URL', false),
       );
     }
     this.fetchImpl = options.fetchImpl ?? fetch;
-    this.timeoutMs = intOption('timeoutMs', options.timeoutMs, 'EXAMPLE_TIMEOUT_MS', 30_000, 1, MAX_TIMER_MS);
+    this.timeoutMs = intOption('timeoutMs', options.timeoutMs, 'TIMELOG_TIMEOUT_MS', 30_000, 1, MAX_TIMER_MS);
     this.maxResponseBytes = intOption(
       'maxResponseBytes',
       options.maxResponseBytes,
-      'EXAMPLE_MAX_RESPONSE_BYTES',
+      'TIMELOG_MAX_RESPONSE_BYTES',
       DEFAULT_MAX_RESPONSE_BYTES,
       1,
       MAX_RESPONSE_BYTES_LIMIT,
     );
     this.semaphore = new Semaphore(
-      intOption('maxConcurrency', options.maxConcurrency, 'EXAMPLE_MAX_CONCURRENCY', 4, 1, 64),
+      intOption('maxConcurrency', options.maxConcurrency, 'TIMELOG_MAX_CONCURRENCY', 4, 1, 64),
     );
     this.maxAttempts = intOption('maxAttempts', options.maxAttempts, undefined, 3, 1, 10);
     this.retryBaseDelayMs = intOption('retryBaseDelayMs', options.retryBaseDelayMs, undefined, 500, 0, 60_000);
@@ -187,13 +190,13 @@ export class ExampleClient implements UpstreamClient {
     return this.request<T>('POST', this.buildUrl(path, query), body);
   }
 
-  async patch<T>(path: string, body?: unknown): Promise<T> {
-    return this.request<T>('PATCH', this.buildUrl(path), body);
+  async put<T>(path: string, body?: unknown): Promise<T> {
+    return this.request<T>('PUT', this.buildUrl(path), body);
   }
 
   buildUrl(path: string, query?: Record<string, QueryValue>): string {
     if (!this.baseUrl) {
-      throw new Error('Missing EXAMPLE_BASE_URL. Set it in the MCP server environment.');
+      throw new Error('Missing TIMELOG_BASE_URL. Set it in the MCP server environment.');
     }
     const normalizedPath = path.startsWith('/') ? path : `/${path}`;
     const url = new URL(`${this.baseUrl}${normalizedPath}`);
@@ -210,12 +213,12 @@ export class ExampleClient implements UpstreamClient {
 
   private headers(): Record<string, string> {
     if (!this.apiKey) {
-      throw new Error('Missing EXAMPLE_API_KEY. Set it in the MCP server environment.');
+      throw new Error('Missing TIMELOG_API_KEY. Set it in the MCP server environment.');
     }
     return {
       Accept: 'application/json',
       'User-Agent': USER_AGENT,
-      [API_KEY_HEADER]: this.apiKey,
+      [API_KEY_HEADER]: `Bearer ${this.apiKey}`,
     };
   }
 
@@ -236,7 +239,7 @@ export class ExampleClient implements UpstreamClient {
       if (!response.ok) {
         // The body is the vendor's text: it is never read into an error, a result or an audit record.
         await discardBody(response);
-        throw new ExampleHttpError({
+        throw new TimelogHttpError({
           status: response.status,
           url: describeUrl(url),
           retryAfter: response.headers.get('retry-after') ?? undefined,
@@ -325,12 +328,12 @@ export class ExampleClient implements UpstreamClient {
   // Our own words with the method only: the address is configuration and is not quoted.
   private transportError(method: HttpMethod, _url: string, error: unknown): Error {
     if (isTimeoutError(error)) {
-      return new Error(this.redactor.redact(`Example API request timed out after ${this.timeoutMs} ms (${method}).`));
+      return new Error(this.redactor.redact(`Timelog API request timed out after ${this.timeoutMs} ms (${method}).`));
     }
     // Only a system error code (ECONNREFUSED, ENOTFOUND, ...) from the cause, never its message.
     const code = (error instanceof Error ? (error.cause as { code?: unknown } | undefined)?.code : undefined) ?? undefined;
     const shown = typeof code === 'string' && SHOWN_NETWORK_CODES.has(code) ? ` (${code})` : '';
-    return new Error(this.redactor.redact(`Network error calling the Example API (${method})${shown}.`), { cause: error });
+    return new Error(this.redactor.redact(`Network error calling the Timelog API (${method})${shown}.`), { cause: error });
   }
 }
 
@@ -388,8 +391,8 @@ function isRedirect(status: number): boolean {
 /** The redirect's Location is the vendor's text and is never quoted; only the status and our own request. */
 function redirectRefusedMessage(response: Response, method: HttpMethod, _url: string): string {
   return (
-    `Example API responded with a redirect (HTTP ${response.status}) for ${method}; ` +
-    'redirects are not followed. Check EXAMPLE_BASE_URL.'
+    `Timelog API responded with a redirect (HTTP ${response.status}) for ${method}; ` +
+    'redirects are not followed. Check TIMELOG_BASE_URL.'
   );
 }
 
@@ -469,7 +472,7 @@ async function readResponseBody(response: Response, maxBytes: number): Promise<u
   const declared = Number(response.headers.get('content-length') ?? 0);
   if (Number.isFinite(declared) && declared > maxBytes) {
     await discardBody(response);
-    throw new Error(`Example API response of ${declared} bytes exceeds the ${maxBytes} byte limit (EXAMPLE_MAX_RESPONSE_BYTES).`);
+    throw new Error(`Timelog API response of ${declared} bytes exceeds the ${maxBytes} byte limit (TIMELOG_MAX_RESPONSE_BYTES).`);
   }
   let read: { bytes: Uint8Array; exceeded: boolean };
   try {
@@ -480,11 +483,11 @@ async function readResponseBody(response: Response, maxBytes: number): Promise<u
     if (isTimeoutError(error) || isTransientNetworkError(error)) {
       throw error;
     }
-    throw new Error('The Example API response could not be read.');
+    throw new Error('The Timelog API response could not be read.');
   }
   const { bytes, exceeded } = read;
   if (exceeded) {
-    throw new Error(`Example API response exceeds the ${maxBytes} byte limit (EXAMPLE_MAX_RESPONSE_BYTES).`);
+    throw new Error(`Timelog API response exceeds the ${maxBytes} byte limit (TIMELOG_MAX_RESPONSE_BYTES).`);
   }
   const text = new TextDecoder().decode(bytes);
   if (!text) {
@@ -514,11 +517,11 @@ function assertSafeBaseUrl(baseUrl: string, allowCustomHost: boolean): void {
   try {
     parsed = new URL(baseUrl);
   } catch {
-    throw new ConfigError('EXAMPLE_BASE_URL is not a valid URL.');
+    throw new ConfigError('TIMELOG_BASE_URL is not a valid URL.');
   }
 
   if (parsed.username || parsed.password || baseUrl.includes('?') || baseUrl.includes('#')) {
-    throw new ConfigError('EXAMPLE_BASE_URL must not contain credentials, a query string or a fragment.');
+    throw new ConfigError('TIMELOG_BASE_URL must not contain credentials, a query string or a fragment.');
   }
 
   if (isLocalHost(parsed.hostname) && (parsed.protocol === 'http:' || parsed.protocol === 'https:')) {
@@ -543,8 +546,8 @@ function assertSafeBaseUrl(baseUrl: string, allowCustomHost: boolean): void {
 
   // The host is not quoted: it is a configuration value.
   throw new ConfigError(
-    `Refusing to send the API key to that host: EXAMPLE_BASE_URL must be on ${UPSTREAM_HOST_SUFFIXES.join(', ')}. ` +
-      'Set EXAMPLE_ALLOW_CUSTOM_BASE_URL=true to allow another host.',
+    `Refusing to send the API key to that host: TIMELOG_BASE_URL must be on ${UPSTREAM_HOST_SUFFIXES.join(', ')}. ` +
+      'Set TIMELOG_ALLOW_CUSTOM_BASE_URL=true to allow another host.',
   );
 }
 

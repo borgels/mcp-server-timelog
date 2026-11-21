@@ -1,40 +1,55 @@
-# mcp-server-example
+# mcp-server-timelog
 
-A [Model Context Protocol](https://modelcontextprotocol.io) server for the Example API. It lets an MCP client (Claude or any other MCP-capable assistant) read data from the Example API and, when enabled, write to it.
+A [Model Context Protocol](https://modelcontextprotocol.io) server for the [TimeLog](https://www.timelog.com) REST API. It lets an MCP client (Claude or any other MCP-capable assistant) read projects, tasks, customers, employees and time registrations in TimeLog and, when enabled, register and correct time and create tasks and projects.
 
-> This is an independent, unofficial project. It is not developed, endorsed or supported by &lt;Vendor&gt;.
+> This is an independent, unofficial project. It is not developed, endorsed or supported by TimeLog A/S.
+
+It authenticates with a **personal access token (PAT)**, which has the rights of the TimeLog user who made it ([TimeLog: personal access tokens](https://api.timelog.com/rest/personalaccesstokens)). Everything the server can see or change is limited by that user's rights in TimeLog. Results are reduced to a list of fields per object: no amounts, hourly rates, cost prices or salaries are returned, and an absence registration is returned without its absence code, name or comment. Nothing deletes, and users and settings are not touched. TimeLog's Reporting API needs a separate service user and is not used.
 
 - Read-only by default; writes are opt-in per instance.
 - One set of upstream credentials per server instance; the server does no per-user authorization itself (see [Security model](#security-model)).
 - Two transports: stdio for local clients, stateless streamable HTTP for containers and gateways.
 - Embeddable: the `./gateway` export exposes the same tools, validation, policy and audit to a host application.
 
-<!-- template:start -->
-## Using this template
-
-This repository is a GitHub template for TypeScript MCP servers: a minimal working server for a fictional upstream API (one read tool, one write tool) with hardened transports, client, policy, audit, tests and release workflows. After creating a repository from it, run `node scripts/rename.mjs <name> [PREFIX]` and follow [docs/NEW-SERVER.md](docs/NEW-SERVER.md). The rename removes this section; the checklist stays. Nothing is published from the template repository, or from a generated repository before the rename.
-<!-- template:end -->
-
 ## Tools
 
 | Tool | Purpose |
 |---|---|
-| `example_get_item` | Fetch one item by id. |
-| `example_create_item` *(write)* | Create an item. |
+| `timelog_check_connection` | Check the token and show which TimeLog user it belongs to. |
+| `timelog_list_projects` | List active (or inactive) projects, or search them by name or number. No amounts. |
+| `timelog_get_project` | One project, optionally with its tasks. |
+| `timelog_list_project_templates` | Project templates a new project can be created from. |
+| `timelog_list_tasks` | A project's tasks, or tasks time can be registered on, by name or number. |
+| `timelog_get_task` | One task with its project. |
+| `timelog_list_customers` | List or search customers. |
+| `timelog_get_customer` | One customer. |
+| `timelog_list_employees` | Employees (users) with name, initials, type and work email. |
+| `timelog_get_employee` | One employee. |
+| `timelog_list_time_registrations` | The token user's time registrations in a period (at most a year). |
+| `timelog_get_time_registration` | One time registration. |
+| `timelog_time_summary` | The token user's hours in a period: total, billable, absence, by project, task and day. |
+| `timelog_timesheet_status` | Weekly timesheet status per employee (what the token user may see). |
+| `timelog_register_time` *(write)* | Register hours on a task, for the token user or, if TimeLog allows it, another employee. |
+| `timelog_update_time` *(write)* | Correct a registration: hours, day, task, comment or billable. Other fields are kept. |
+| `timelog_create_task` *(write)* | Create a task or a sub-task on a project. |
+| `timelog_create_project` *(write)* | Create a project for a customer from a template. |
+| `timelog_update_project` *(write)* | Change a project's name, description, project manager or budgeted hours. |
+
+`update_time` and `update_project` read the record first and send back every field they do not change, because TimeLog's update replaces them.
 
 ## Quick start
 
-Requires Node.js 22 or later and an API key for the Example API.
+Requires Node.js 22 or later, your TimeLog address (`https://app<n>.timelog.com/<account>`, as in the browser after signing in) and a personal access token from <https://login.timelog.com/personaltoken>.
 
 ```bash
-npx <npm-package>
+npx mcp-server-timelog
 ```
 
 Or build from source:
 
 ```bash
-git clone https://github.com/borgels/mcp-server-example.git
-cd mcp-server-example
+git clone https://github.com/borgels/mcp-server-timelog.git
+cd mcp-server-timelog
 npm ci
 npm run build
 ```
@@ -42,9 +57,9 @@ npm run build
 Claude Code:
 
 ```bash
-claude mcp add example \
-  --env EXAMPLE_API_KEY=<key> --env EXAMPLE_BASE_URL=<base url> \
-  -- npx -y <npm-package>
+claude mcp add timelog \
+  --env TIMELOG_API_KEY=<token> --env TIMELOG_BASE_URL=https://app1.timelog.com/youraccount \
+  -- npx -y mcp-server-timelog
 ```
 
 Claude Desktop (`claude_desktop_config.json`), or any client that launches stdio servers:
@@ -52,12 +67,12 @@ Claude Desktop (`claude_desktop_config.json`), or any client that launches stdio
 ```json
 {
   "mcpServers": {
-    "example": {
+    "timelog": {
       "command": "npx",
-      "args": ["-y", "<npm-package>"],
+      "args": ["-y", "mcp-server-timelog"],
       "env": {
-        "EXAMPLE_API_KEY": "<key>",
-        "EXAMPLE_BASE_URL": "<base url>"
+        "TIMELOG_API_KEY": "<token>",
+        "TIMELOG_BASE_URL": "https://app1.timelog.com/youraccount"
       }
     }
   }
@@ -66,21 +81,21 @@ Claude Desktop (`claude_desktop_config.json`), or any client that launches stdio
 
 ### Docker and HTTP
 
-Images are published to `ghcr.io/borgels/mcp-server-example`: `latest` and the commit SHA from `main`, and `vX.Y.Z` for release tags. The container serves streamable HTTP at `/mcp` on port 3000, plus an unauthenticated `GET /healthz`.
+Images are published to `ghcr.io/borgels/mcp-server-timelog`: `latest` and the commit SHA from `main`, and `vX.Y.Z` for release tags. The container serves streamable HTTP at `/mcp` on port 3000, plus an unauthenticated `GET /healthz`.
 
 ```bash
 TOKEN=$(openssl rand -hex 32); echo "$TOKEN"
-docker run -d --name example-mcp -p 127.0.0.1:3000:3000 \
-  -e EXAMPLE_API_KEY=<key> \
-  -e EXAMPLE_BASE_URL=<base url> \
+docker run -d --name timelog-mcp -p 127.0.0.1:3000:3000 \
+  -e TIMELOG_API_KEY=<token> \
+  -e TIMELOG_BASE_URL=https://app1.timelog.com/youraccount \
   -e MCP_HTTP_TOKEN="$TOKEN" \
-  ghcr.io/borgels/mcp-server-example:latest
+  ghcr.io/borgels/mcp-server-timelog:latest
 
-claude mcp add --transport http example http://127.0.0.1:3000/mcp \
+claude mcp add --transport http timelog http://127.0.0.1:3000/mcp \
   --header "Authorization: Bearer $TOKEN"
 ```
 
-To keep an audit log in the container, mount a writable directory and point `EXAMPLE_AUDIT_LOG` into it (e.g. `-v example-audit:/audit -e EXAMPLE_AUDIT_LOG=/audit/audit.jsonl`); the image runs as the `node` user and `/app` is not writable.
+To keep an audit log in the container, mount a writable directory and point `TIMELOG_AUDIT_LOG` into it (e.g. `-v timelog-audit:/audit -e TIMELOG_AUDIT_LOG=/audit/audit.jsonl`); the image runs as the `node` user and `/app` is not writable.
 
 Clients send `Authorization: Bearer <MCP_HTTP_TOKEN>`. The server will not start on a non-loopback address without a token of at least 32 characters. It does not terminate TLS; run it behind a reverse proxy or gateway that does.
 
@@ -92,20 +107,20 @@ Configuration is read from the environment (see `.env.example`). Invalid numbers
 
 | Variable | Default | Description |
 |---|---|---|
-| `EXAMPLE_API_KEY` | – | **Required.** API key. |
-| `EXAMPLE_BASE_URL` | – | **Required.** Base URL of the API. Must be `https` (loopback `http` is allowed for local mocks). |
-| `EXAMPLE_ALLOW_CUSTOM_BASE_URL` | `false` | Allow a base URL outside the hosts the server expects, when such a list is configured. |
-| `EXAMPLE_TIMEOUT_MS` | `30000` | Timeout per request attempt. |
-| `EXAMPLE_MAX_CONCURRENCY` | `4` | Maximum concurrent upstream requests. |
-| `EXAMPLE_MAX_RESPONSE_BYTES` | `10485760` | Largest response body read (at most 100 MB). |
+| `TIMELOG_API_KEY` | – | **Required.** Personal access token, sent as `Authorization: Bearer <token>`. |
+| `TIMELOG_BASE_URL` | – | **Required.** The account address, `https://app<n>.timelog.com/<account>`; the server calls `<address>/api/v1/...`. Must be `https` on `timelog.com` (loopback `http` is allowed for local mocks). |
+| `TIMELOG_ALLOW_CUSTOM_BASE_URL` | `false` | Allow a base URL outside the hosts the server expects, when such a list is configured. |
+| `TIMELOG_TIMEOUT_MS` | `30000` | Timeout per request attempt. |
+| `TIMELOG_MAX_CONCURRENCY` | `4` | Maximum concurrent upstream requests. |
+| `TIMELOG_MAX_RESPONSE_BYTES` | `10485760` | Largest response body read (at most 100 MB). |
 
 ### Access control
 
 | Variable | Default | Description |
 |---|---|---|
-| `EXAMPLE_ENABLE_WRITES` | `false` | Enable the write tools. |
-| `EXAMPLE_DISABLED_TOOLS` | – | Comma-separated tool names to disable, with or without the `example_` prefix. |
-| `EXAMPLE_AUDIT_LOG` | – | Path of a JSONL audit log: one record per tool call start, finish and error, with ids in clear text, free text hashed, duration, status and the caller passed by an embedding host. Write tools refuse to run if the log cannot be written. |
+| `TIMELOG_ENABLE_WRITES` | `false` | Enable the write tools. |
+| `TIMELOG_DISABLED_TOOLS` | – | Comma-separated tool names to disable, with or without the `timelog_` prefix. |
+| `TIMELOG_AUDIT_LOG` | – | Path of a JSONL audit log: one record per tool call start, finish and error, with ids in clear text, free text hashed, duration, status and the caller passed by an embedding host. Write tools refuse to run if the log cannot be written. |
 
 ### HTTP transport
 
@@ -126,17 +141,17 @@ Configuration is read from the environment (see `.env.example`). Invalid numbers
 A host application can run the tools in-process instead of over MCP:
 
 ```ts
-import { createExampleGateway, exampleToolCatalog } from '<npm-package>/gateway';
+import { createTimelogGateway, timelogToolCatalog } from 'mcp-server-timelog/gateway';
 
-const gateway = createExampleGateway({ apiKey: tenant.apiKey, baseUrl: tenant.baseUrl });
-const result = await gateway.callTool('get_item', { itemId: 'i1' }, { caller: 'user@example.test' });
+const gateway = createTimelogGateway({ apiKey: tenant.apiKey, baseUrl: tenant.baseUrl });
+const result = await gateway.callTool('list_projects', { query: 'website' }, { caller: 'person-1' });
 ```
 
-- **Explicit credentials.** `apiKey` and `baseUrl` are required; a missing value throws when the gateway is created. A gateway never reads `EXAMPLE_API_KEY` or `EXAMPLE_BASE_URL` from the environment, so one tenant cannot silently fall back to the process's credentials. The stdio and HTTP transports still read them from the environment.
+- **Explicit credentials.** `apiKey` and `baseUrl` are required; a missing value throws when the gateway is created. A gateway never reads `TIMELOG_API_KEY` or `TIMELOG_BASE_URL` from the environment, so one tenant cannot silently fall back to the process's credentials. The stdio and HTTP transports still read them from the environment.
 - **Several tenants in one process.** Create one gateway per set of credentials. Each instance redacts error text, tool results and audit records with its own key only; no secret is kept in a process-wide registry, and a dropped instance releases its key.
-- **Instance policy from the host.** Pass `policy` to `createExampleGateway`: `enableWrites` (default false), `disabledTools` (must name known tools) and `audit`, a function that receives each audit record instead of `EXAMPLE_AUDIT_LOG` (without it the instance writes no audit; a write tool does not run if the sink throws on its start record). An instance with `policy` reads none of `EXAMPLE_ENABLE_WRITES`, `EXAMPLE_DISABLED_TOOLS`, `EXAMPLE_AUDIT_LOG` or `EXAMPLE_ALLOW_CUSTOM_BASE_URL`, so tenants in one process can have different settings. Without `policy` the instance uses the environment, like the MCP server. Each call runs in a scope of its own, so a call made from inside another instance's call never inherits its policy, sink or redactor, and every audit record is redacted as a whole with the instance's own key before the sink sees it. The limits (`EXAMPLE_TIMEOUT_MS`, ...) are still read from the environment and apply to every gateway in the process. Per-user and per-tenant authorization is the host's job.
+- **Instance policy from the host.** Pass `policy` to `createTimelogGateway`: `enableWrites` (default false), `disabledTools` (must name known tools) and `audit`, a function that receives each audit record instead of `TIMELOG_AUDIT_LOG` (without it the instance writes no audit; a write tool does not run if the sink throws on its start record). An instance with `policy` reads none of `TIMELOG_ENABLE_WRITES`, `TIMELOG_DISABLED_TOOLS`, `TIMELOG_AUDIT_LOG` or `TIMELOG_ALLOW_CUSTOM_BASE_URL`, so tenants in one process can have different settings. Without `policy` the instance uses the environment, like the MCP server. Each call runs in a scope of its own, so a call made from inside another instance's call never inherits its policy, sink or redactor, and every audit record is redacted as a whole with the instance's own key before the sink sees it. The limits (`TIMELOG_TIMEOUT_MS`, ...) are still read from the environment and apply to every gateway in the process. Per-user and per-tenant authorization is the host's job.
 - **Result format.** A successful `callTool` result has `structuredContent` and one text block: a short summary, a blank line, and the same data as compact JSON, as the MCP specification recommends (many clients read only the text). The JSON is built from the redacted result, so it holds exactly `structuredContent`. An error result has only its text.
-- **Tool catalog.** `exampleToolCatalog` is a frozen list of every tool: `name` (without the `example_` prefix), `title`, `description`, `riskLevel` (`read`, `write` or `destructive`), `enabledByDefault`, `inputSchema` (JSON Schema), `broad` (true when a tool can read more than its name says, so a host gives it only to roles that may read everything) and `upstream`, the API requests the tool may make (`access`, `method` and path template). It is generated from the same tool table as the MCP server, so it cannot drift from the registered tools. `exampleGatewayTools` holds the same definitions without `upstream` and `broad`; `gateway.tools` lists those enabled on the instance.
+- **Tool catalog.** `timelogToolCatalog` is a frozen list of every tool: `name` (without the `timelog_` prefix), `title`, `description`, `riskLevel` (`read`, `write` or `destructive`), `enabledByDefault`, `inputSchema` (JSON Schema), `broad` (true when a tool can read more than its name says, so a host gives it only to roles that may read everything) and `upstream`, the API requests the tool may make (`access`, `method` and path template). It is generated from the same tool table as the MCP server, so it cannot drift from the registered tools. `timelogGatewayTools` holds the same definitions without `upstream` and `broad`; `gateway.tools` lists those enabled on the instance.
 
 ## Threat model
 
@@ -199,7 +214,7 @@ on as the API returned them.
 - **One shared identity.** Every caller acts with the rights of the configured API key. Give it the least rights that work and rotate it regularly.
 - **Per-user authorization belongs in front of the server.** The server checks a single bearer token and does not know the end user. For multi-user use, run it behind an identity-aware gateway that decides which users may call which tools, holds the bearer token, and is the only network path to the server. Hosts can also embed the tools through the `./gateway` module export and pass the caller identity into the audit log.
 - **Tool access is not data access.** A gateway controls who may call which tool; every permitted caller still sees everything the API key can see. To separate data, run several instances with different keys.
-- **Writes are off by default.** Write tools are annotated as destructive so clients can ask for confirmation. Read-only tools get a client that refuses non-GET requests. When `EXAMPLE_AUDIT_LOG` is set, a write tool does not run unless its start record is written; without it there is no audit record.
+- **Writes are off by default.** Write tools are annotated as destructive so clients can ask for confirmation. Read-only tools get a client that refuses non-GET requests. When `TIMELOG_AUDIT_LOG` is set, a write tool does not run unless its start record is written; without it there is no audit record.
 - **Upstream content is untrusted input.** Data returned by the API may be written by anyone with access to it. Tool results label it as data; clients that combine this server with other tools should treat it accordingly.
 - **The API key stays on the API origin.** Redirects are never followed, the base URL must use `https`, and error messages and audit records are redacted (by each instance, with that instance's key) and size-capped. See the threat model above for what is and is not guaranteed.
 - **The HTTP transport fails closed.** It refuses to start on a non-loopback address or with any origin allowed unless a token is set, compares tokens in constant time, throttles failed authentication per client address, checks `Origin` and `Host` (DNS rebinding), and caps request bodies.
@@ -220,8 +235,8 @@ Project layout:
 
 | Path | Contents |
 |---|---|
-| `src/tools/example.ts` | Shared tool table (MCP and gateway), policy and audit wrapper. |
-| `src/example/` | Upstream client, API calls, policy, audit, tool annotations. |
+| `src/tools/timelog.ts` | Shared tool table (MCP and gateway), policy and audit wrapper. |
+| `src/timelog/` | Upstream client, API calls, policy, audit, tool annotations. |
 | `src/transports/` | stdio and HTTP entry points; HTTP auth, origin and host checks. |
 | `src/gateway.ts` | Embeddable entry point (`./gateway` export). |
 | `src/config-env.ts` | Validated environment readers. |

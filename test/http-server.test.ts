@@ -3,7 +3,7 @@ import { request as httpRequest } from 'node:http';
 import { type AddressInfo, connect, createServer as createNetServer } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
-import { ExampleClient } from '../src/example/client.js';
+import { TimelogClient } from '../src/timelog/client.js';
 import { createServer } from '../src/server.js';
 import type { HttpConfig } from '../src/transports/http-helpers.js';
 import { type RunningHttpServer, startHttpServer } from '../src/transports/http-server.js';
@@ -49,9 +49,9 @@ const mcpHeaders = {
 };
 
 function fakeMcpServer() {
-  const client = new ExampleClient({
+  const client = new TimelogClient({
     apiKey: 'test',
-    baseUrl: 'https://api.vendor.test',
+    baseUrl: 'https://app1.timelog.com/demo',
     fetchImpl: async () => {
       throw new Error('network access is not allowed in tests');
     },
@@ -289,7 +289,7 @@ describe('HTTP transport entry point', () => {
     return new Promise((resolve, reject) => {
       const childEnv: NodeJS.ProcessEnv = { ...process.env };
       for (const name of Object.keys(childEnv)) {
-        if (name.startsWith('MCP_') || name.startsWith('EXAMPLE_') || name === 'HOST' || name === 'PORT') {
+        if (name.startsWith('MCP_') || name.startsWith('TIMELOG_') || name === 'HOST' || name === 'PORT') {
           delete childEnv[name];
         }
       }
@@ -315,10 +315,10 @@ describe('HTTP transport entry point', () => {
     [{ MCP_ALLOW_ANY_ORIGIN: 'true' }, /MCP_ALLOW_ANY_ORIGIN/],
     [{ MCP_HTTP_TOKEN: 'too-short' }, /at least 32/],
     [{ PORT: 'abc' }, /PORT/],
-    [{ EXAMPLE_TIMEOUT_MS: 'abc' }, /EXAMPLE_TIMEOUT_MS/],
-    [{ EXAMPLE_ENABLE_WRITES: 'maybe' }, /EXAMPLE_ENABLE_WRITES/],
-    [{ EXAMPLE_DISABLED_TOOLS: 'no_such_tool' }, /EXAMPLE_DISABLED_TOOLS/],
-    [{ EXAMPLE_BASE_URL: 'http://api.vendor.test' }, /https:\/\//],
+    [{ TIMELOG_TIMEOUT_MS: 'abc' }, /TIMELOG_TIMEOUT_MS/],
+    [{ TIMELOG_ENABLE_WRITES: 'maybe' }, /TIMELOG_ENABLE_WRITES/],
+    [{ TIMELOG_DISABLED_TOOLS: 'no_such_tool' }, /TIMELOG_DISABLED_TOOLS/],
+    [{ TIMELOG_BASE_URL: 'http://api.vendor.test' }, /https:\/\//],
   ])('refuses to start with %o', async (env, message) => {
     const result = await runEntry(env);
     expect(result.code).toBe(1);

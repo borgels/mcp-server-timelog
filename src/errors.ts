@@ -51,7 +51,7 @@ const BASE_PATTERNS: readonly RegExp[] = [
   headerPattern('x-api-key'),
   // Any scheme word (Bearer, Basic, Token, ...) followed by the credentials.
   /["']?authorization["']?\s*[:=]\s*["']?(?:[a-z][\w-]*\s+)?[^"',\s}]+/gi,
-  /(apiKey|EXAMPLE_API_KEY|api_key|access_token)["']?\s*[:=]\s*["']?[^"',\s}]+/gi,
+  /(apiKey|TIMELOG_API_KEY|api_key|access_token)["']?\s*[:=]\s*["']?[^"',\s}]+/gi,
 ];
 
 /**
@@ -159,7 +159,7 @@ function applyPatterns(value: string, patterns: readonly RegExp[]): string {
 
 /** Our own guidance per HTTP status. Replace or extend with the vendor's documented statuses. */
 const STATUS_HINTS: Record<number, string> = {
-  401: 'The API key was rejected (invalid or expired). The server operator must renew EXAMPLE_API_KEY.',
+  401: 'The API key was rejected (invalid or expired). The server operator must renew TIMELOG_API_KEY.',
   403: 'The API key has no access to this resource. Retrying will not help.',
   404: 'The object was not found, or the API key has no access to it. Check the ids.',
   429: 'The upstream API is throttling requests. Wait and retry later.',
@@ -169,7 +169,7 @@ const STATUS_HINTS: Record<number, string> = {
  * An HTTP error from the upstream API. It keeps the status and the parsed
  * Retry-After, nothing from the response body: the message is our own.
  */
-export class ExampleHttpError extends Error {
+export class TimelogHttpError extends Error {
   readonly status: number;
   readonly url: string;
   /** Seconds to wait, parsed from Retry-After; undefined when absent or malformed. */
@@ -177,7 +177,7 @@ export class ExampleHttpError extends Error {
 
   constructor(input: { status: number; url: string; retryAfter?: string }) {
     super(httpErrorMessage(input.status, input.retryAfter));
-    this.name = 'ExampleHttpError';
+    this.name = 'TimelogHttpError';
     this.status = input.status;
     this.url = describeUrl(input.url);
     const retryMs = parseRetryAfterMs(input.retryAfter);
@@ -189,7 +189,7 @@ export class ExampleHttpError extends Error {
 export function httpErrorMessage(status: number, retryAfter?: string): string {
   const retryMs = parseRetryAfterMs(retryAfter);
   return [
-    `Example API request failed with HTTP ${status}`,
+    `Timelog API request failed with HTTP ${status}`,
     Object.hasOwn(STATUS_HINTS, status) ? STATUS_HINTS[status] : undefined,
     retryMs === undefined ? undefined : `retry-after=${Math.ceil(retryMs / 1000)}s`,
   ]
@@ -268,13 +268,13 @@ export function redactDeep(value: unknown, redactor?: SecretRedactor, depth = 0)
  * fixed text. Never the error's own message.
  */
 export function nestedFailureText(error: unknown): string {
-  if (error instanceof ExampleHttpError) {
-    return `Example API request failed with HTTP ${error.status}`;
+  if (error instanceof TimelogHttpError) {
+    return `Timelog API request failed with HTTP ${error.status}`;
   }
   if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) {
-    return 'Example API request timed out.';
+    return 'Timelog API request timed out.';
   }
-  return 'Example API request failed.';
+  return 'Timelog API request failed.';
 }
 
 /** Keys whose value is a failure context: anything inside that carries an error or a message is a failure. */
@@ -289,8 +289,8 @@ function failureEntry(value: unknown): { status?: number; message: string } {
   const status =
     typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>).status : undefined;
   return typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599
-    ? { status, message: `Example API request failed with HTTP ${status}` }
-    : { message: 'Example API request failed.' };
+    ? { status, message: `Timelog API request failed with HTTP ${status}` }
+    : { message: 'Timelog API request failed.' };
 }
 
 /** A failure list: every element (an object with any fields, a text, a list) becomes a failureEntry. */
@@ -335,8 +335,8 @@ export function nestedFailuresAsStatus(value: unknown, depth = 0, context = fals
   const present = (field: string) => Object.hasOwn(record, field) && record[field] !== null && record[field] !== undefined;
   if (failedStatus || present('error') || (context && FAILURE_FIELDS.some(present))) {
     return failedStatus
-      ? { status, error: `Example API request failed with HTTP ${status}` }
-      : { error: 'Example API request failed.' };
+      ? { status, error: `Timelog API request failed with HTTP ${status}` }
+      : { error: 'Timelog API request failed.' };
   }
   return Object.fromEntries(
     Object.entries(record).map(([key, entry]) => [
