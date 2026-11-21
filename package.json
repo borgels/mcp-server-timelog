@@ -1,6 +1,6 @@
 {
   "name": "mcp-server-timelog",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "mcpName": "io.github.borgels/mcp-server-timelog",
   "description": "Unofficial MCP server for the TimeLog REST API: projects, tasks, customers, employees and time registrations, with a personal access token.",
   "type": "module",
@@ -16,6 +16,7 @@
     "dist",
     "README.md",
     "LICENSE",
+    "NOTICE",
     "CHANGELOG.md",
     ".env.example"
   ],
@@ -44,7 +45,7 @@
     "professional-services"
   ],
   "author": "",
-  "license": "Apache-2.0",
+  "license": "FSL-1.1-ALv2",
   "engines": {
     "node": ">=22"
   },
