@@ -4,18 +4,18 @@ import { join } from 'node:path';
 import { setFlagsFromString } from 'node:v8';
 import { runInNewContext } from 'node:vm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { API_KEY_HEADER, ExampleClient } from '../src/example/client.js';
-import { createExampleGateway, exampleGatewayTools, exampleToolCatalog } from '../src/gateway.js';
-import { EXAMPLE_TOOLS } from '../src/tools/example.js';
+import { API_KEY_HEADER, TimelogClient } from '../src/timelog/client.js';
+import { createTimelogGateway, timelogGatewayTools, timelogToolCatalog } from '../src/gateway.js';
+import { TIMELOG_TOOLS } from '../src/tools/timelog.js';
 import { BASE, auditLines, connect, stubFetch, texts } from './helpers.js';
 
 const originalEnv = { ...process.env };
 let dir: string;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'example-mcp-'));
+  dir = mkdtempSync(join(tmpdir(), 'timelog-mcp-'));
   for (const name of Object.keys(process.env)) {
-    if (name.startsWith('EXAMPLE_')) {
+    if (name.startsWith('TIMELOG_')) {
       delete process.env[name];
     }
   }
@@ -47,18 +47,18 @@ function headersOf(init?: RequestInit): Record<string, string> {
 
 describe('explicit gateway credentials', () => {
   it('requires apiKey and baseUrl and ignores the environment', () => {
-    process.env.EXAMPLE_API_KEY = ENV_KEY;
-    process.env.EXAMPLE_BASE_URL = BASE;
+    process.env.TIMELOG_API_KEY = ENV_KEY;
+    process.env.TIMELOG_BASE_URL = BASE;
 
-    expect(() => createExampleGateway({ baseUrl: BASE } as never)).toThrow(/requires options\.apiKey/);
-    expect(() => createExampleGateway({ apiKey: KEY_A } as never)).toThrow(/requires options\.baseUrl/);
-    expect(() => createExampleGateway({ apiKey: '  ', baseUrl: BASE })).toThrow(/requires options\.apiKey/);
-    expect(() => createExampleGateway(undefined as never)).toThrow(/requires options\.apiKey/);
+    expect(() => createTimelogGateway({ baseUrl: BASE } as never)).toThrow(/requires options\.apiKey/);
+    expect(() => createTimelogGateway({ apiKey: KEY_A } as never)).toThrow(/requires options\.baseUrl/);
+    expect(() => createTimelogGateway({ apiKey: '  ', baseUrl: BASE })).toThrow(/requires options\.apiKey/);
+    expect(() => createTimelogGateway(undefined as never)).toThrow(/requires options\.apiKey/);
   });
 
   it('never reads credential variables from process.env, even when they are set', async () => {
     const reads = new Set<string>();
-    const env = { ...process.env, EXAMPLE_API_KEY: ENV_KEY, EXAMPLE_BASE_URL: BASE };
+    const env = { ...process.env, TIMELOG_API_KEY: ENV_KEY, TIMELOG_BASE_URL: BASE };
     process.env = new Proxy(env, {
       get(target, property, receiver) {
         if (typeof property === 'string') {
@@ -68,42 +68,42 @@ describe('explicit gateway credentials', () => {
       },
     });
 
-    expect(() => createExampleGateway({ baseUrl: BASE } as never)).toThrow(/requires options\.apiKey/);
+    expect(() => createTimelogGateway({ baseUrl: BASE } as never)).toThrow(/requires options\.apiKey/);
 
-    const fetchImpl = stubFetch({ [`GET ${BASE}/items/i1`]: { body: { id: 'i1' } } });
-    const gw = createExampleGateway({ apiKey: KEY_A, baseUrl: BASE, fetchImpl: fetchImpl as unknown as typeof fetch });
-    const result = await gw.callTool('get_item', { itemId: 'i1' });
+    const fetchImpl = stubFetch({ [`GET ${BASE}/api/v1/project/1`]: { body: { id: 'i1' } } });
+    const gw = createTimelogGateway({ apiKey: KEY_A, baseUrl: BASE, fetchImpl: fetchImpl as unknown as typeof fetch });
+    const result = await gw.callTool('get_project', { projectId: 1 });
     expect(result.isError).toBeUndefined();
-    expect(headersOf(fetchImpl.mock.calls[0]?.[1])[API_KEY_HEADER]).toBe(KEY_A);
+    expect(headersOf(fetchImpl.mock.calls[0]?.[1])[API_KEY_HEADER]).toBe(`Bearer ${KEY_A}`);
 
-    expect(reads.has('EXAMPLE_API_KEY')).toBe(false);
-    expect(reads.has('EXAMPLE_BASE_URL')).toBe(false);
+    expect(reads.has('TIMELOG_API_KEY')).toBe(false);
+    expect(reads.has('TIMELOG_BASE_URL')).toBe(false);
   });
 
   it('still reads credentials from the environment in the standalone client', async () => {
-    process.env.EXAMPLE_API_KEY = ENV_KEY;
-    process.env.EXAMPLE_BASE_URL = BASE;
+    process.env.TIMELOG_API_KEY = ENV_KEY;
+    process.env.TIMELOG_BASE_URL = BASE;
     const fetchImpl = vi.fn(async () => Response.json({})) as unknown as typeof fetch & ReturnType<typeof vi.fn>;
-    await new ExampleClient({ fetchImpl }).get('/items/1');
-    expect(headersOf(fetchImpl.mock.calls[0]?.[1] as RequestInit)[API_KEY_HEADER]).toBe(ENV_KEY);
+    await new TimelogClient({ fetchImpl }).get('/items/1');
+    expect(headersOf(fetchImpl.mock.calls[0]?.[1] as RequestInit)[API_KEY_HEADER]).toBe(`Bearer ${ENV_KEY}`);
   });
 });
 
 describe('per-instance redaction', () => {
   it('redacts each instance’s own key in its tool results', async () => {
-    const a = createExampleGateway({ apiKey: KEY_A, baseUrl: BASE, fetchImpl: echoingFetch(KEY_A) });
-    const b = createExampleGateway({ apiKey: KEY_B, baseUrl: BASE, fetchImpl: echoingFetch(KEY_B) });
+    const a = createTimelogGateway({ apiKey: KEY_A, baseUrl: BASE, fetchImpl: echoingFetch(KEY_A) });
+    const b = createTimelogGateway({ apiKey: KEY_B, baseUrl: BASE, fetchImpl: echoingFetch(KEY_B) });
 
-    const resultA = texts(await a.callTool('get_item', { itemId: 'i1' })).join(' ');
-    const resultB = texts(await b.callTool('get_item', { itemId: 'i1' })).join(' ');
+    const resultA = texts(await a.callTool('get_project', { projectId: 1 })).join(' ');
+    const resultB = texts(await b.callTool('get_project', { projectId: 1 })).join(' ');
     // The echoing error body is never read into the result; the key is not there in any form.
     expect(resultA).not.toContain(KEY_A);
     expect(resultB).not.toContain(KEY_B);
   });
 
   it('keeps redactors separate: an instance holds only its own secrets', () => {
-    const a = new ExampleClient({ apiKey: KEY_A, baseUrl: BASE, credentialEnv: {} });
-    const b = new ExampleClient({ apiKey: KEY_B, baseUrl: BASE, credentialEnv: {} });
+    const a = new TimelogClient({ apiKey: KEY_A, baseUrl: BASE, credentialEnv: {} });
+    const b = new TimelogClient({ apiKey: KEY_B, baseUrl: BASE, credentialEnv: {} });
     expect(a.redactor.hasSecret(KEY_A)).toBe(true);
     expect(a.redactor.hasSecret(KEY_B)).toBe(false);
     expect(b.redactor.hasSecret(KEY_B)).toBe(true);
@@ -114,24 +114,24 @@ describe('per-instance redaction', () => {
 
   it('does not accumulate keys of earlier instances', () => {
     for (let index = 0; index < 200; index += 1) {
-      createExampleGateway({ apiKey: `short-lived-key-${index}`, baseUrl: BASE });
+      createTimelogGateway({ apiKey: `short-lived-key-${index}`, baseUrl: BASE });
     }
-    const fresh = new ExampleClient({ apiKey: KEY_A, baseUrl: BASE, credentialEnv: {} });
+    const fresh = new TimelogClient({ apiKey: KEY_A, baseUrl: BASE, credentialEnv: {} });
     expect(fresh.redactor.redact('short-lived-key-7')).toBe('short-lived-key-7');
   });
 
   it('redacts audit records with the key of the instance that ran the call', async () => {
-    process.env.EXAMPLE_AUDIT_LOG = join(dir, 'audit.jsonl');
+    process.env.TIMELOG_AUDIT_LOG = join(dir, 'audit.jsonl');
     const failing = (key: string) =>
       vi.fn(async () => {
         throw new TypeError(`connection refused while sending ${key}`);
       }) as unknown as typeof fetch;
-    const a = createExampleGateway({ apiKey: KEY_A, baseUrl: BASE, fetchImpl: failing(KEY_A), maxAttempts: 1 });
-    const b = createExampleGateway({ apiKey: KEY_B, baseUrl: BASE, fetchImpl: failing(KEY_B), maxAttempts: 1 });
-    await a.callTool('get_item', { itemId: 'i1' }, { requestId: 'a' });
-    await b.callTool('get_item', { itemId: 'i1' }, { requestId: 'b' });
+    const a = createTimelogGateway({ apiKey: KEY_A, baseUrl: BASE, fetchImpl: failing(KEY_A), maxAttempts: 1 });
+    const b = createTimelogGateway({ apiKey: KEY_B, baseUrl: BASE, fetchImpl: failing(KEY_B), maxAttempts: 1 });
+    await a.callTool('get_project', { projectId: 1 }, { requestId: 'a' });
+    await b.callTool('get_project', { projectId: 1 }, { requestId: 'b' });
 
-    const errors = auditLines(process.env.EXAMPLE_AUDIT_LOG).filter(line => line.action === 'error');
+    const errors = auditLines(process.env.TIMELOG_AUDIT_LOG).filter(line => line.action === 'error');
     expect(errors.map(line => line.requestId)).toEqual(['a', 'b']);
     const log = JSON.stringify(errors);
     expect(log).not.toContain(KEY_A);
@@ -139,14 +139,14 @@ describe('per-instance redaction', () => {
   });
 
   it('redacts with the server client’s key on the MCP path', async () => {
-    const tool = EXAMPLE_TOOLS.find(t => t.name === 'example_get_item')!;
+    const tool = TIMELOG_TOOLS.find(t => t.name === 'timelog_get_project')!;
     const original = tool.handler;
     tool.handler = async () => {
       throw new Error('failed with test-api-key');
     };
     try {
       const { mcpClient } = await connect();
-      const result = await mcpClient.callTool({ name: 'example_get_item', arguments: { itemId: 'i1' } });
+      const result = await mcpClient.callTool({ name: 'timelog_get_project', arguments: { projectId: 1 } });
       expect(texts(result).join(' ')).not.toContain('test-api-key');
     } finally {
       tool.handler = original;
@@ -156,7 +156,7 @@ describe('per-instance redaction', () => {
   it('lets a dropped instance and its key be garbage collected', async () => {
     setFlagsFromString('--expose-gc');
     const gc = runInNewContext('gc') as () => void;
-    let gateway: ReturnType<typeof createExampleGateway> | undefined = createExampleGateway({
+    let gateway: ReturnType<typeof createTimelogGateway> | undefined = createTimelogGateway({
       apiKey: fakeKey('collectable'),
       baseUrl: BASE,
     });
@@ -171,19 +171,36 @@ describe('per-instance redaction', () => {
 });
 
 /** Sample input per tool, used to check each tool's declared upstream requests. */
-const SAMPLE_INPUTS: Record<string, Record<string, string>> = {
-  get_item: { itemId: 'i1' },
-  create_item: { name: 'New item' },
+const SAMPLE_INPUTS: Record<string, Record<string, unknown>> = {
+  check_connection: {},
+  list_projects: { customerId: 3 },
+  get_project: { projectId: 1, includeTasks: true },
+  list_project_templates: {},
+  list_tasks: { projectId: 1 },
+  get_task: { taskId: 5 },
+  list_customers: { query: 'Nordlys' },
+  get_customer: { customerId: 3 },
+  list_employees: {},
+  get_employee: { employeeId: 9 },
+  list_time_registrations: { fromDate: '2026-11-02', toDate: '2026-11-06' },
+  get_time_registration: { timeRegistrationId: 77 },
+  time_summary: { fromDate: '2026-11-02', toDate: '2026-11-06' },
+  timesheet_status: { fromDate: '2026-11-02', toDate: '2026-11-30' },
+  register_time: { taskId: 5, date: '2026-11-03', hours: 1.5 },
+  update_time: { timeRegistrationId: 77, hours: 2 },
+  create_task: { projectId: 1, name: 'New task', parentTaskId: 5 },
+  create_project: { templateId: 2, name: 'New project', customerId: 3 },
+  update_project: { projectId: 1, name: 'Renamed' },
 };
 
 describe('tool catalog', () => {
   it('lists every registered tool, matching the gateway definitions', async () => {
-    expect(exampleToolCatalog.map(entry => entry.name)).toEqual(exampleGatewayTools.map(tool => tool.name));
-    for (const entry of exampleToolCatalog) {
+    expect(timelogToolCatalog.map(entry => entry.name)).toEqual(timelogGatewayTools.map(tool => tool.name));
+    for (const entry of timelogToolCatalog) {
       const { upstream, broad, ...definition } = entry;
       expect(typeof broad).toBe('boolean');
       if (broad) expect(entry.riskLevel).toBe('read');
-      expect(definition).toEqual(exampleGatewayTools.find(tool => tool.name === entry.name));
+      expect(definition).toEqual(timelogGatewayTools.find(tool => tool.name === entry.name));
       expect(upstream.length).toBeGreaterThan(0);
       for (const operation of upstream) {
         expect(operation.access === 'read' ? operation.method === 'GET' : true).toBe(true);
@@ -196,10 +213,10 @@ describe('tool catalog', () => {
     const { mcpClient } = await connect();
     const { tools } = await mcpClient.listTools();
     expect(tools.map(tool => tool.name).sort()).toEqual(
-      exampleToolCatalog.map(entry => `example_${entry.name}`).sort(),
+      timelogToolCatalog.map(entry => `timelog_${entry.name}`).sort(),
     );
     for (const tool of tools) {
-      const entry = exampleToolCatalog.find(e => `example_${e.name}` === tool.name)!;
+      const entry = timelogToolCatalog.find(e => `timelog_${e.name}` === tool.name)!;
       expect(entry.title).toBe(tool.title);
       expect(entry.description).toBe(tool.description);
       expect(Object.keys(entry.inputSchema.properties as object).sort()).toEqual(
@@ -209,32 +226,33 @@ describe('tool catalog', () => {
   });
 
   it('is deeply frozen', () => {
-    expect(Object.isFrozen(exampleToolCatalog)).toBe(true);
+    expect(Object.isFrozen(timelogToolCatalog)).toBe(true);
     const visit = (value: unknown) => {
       if (typeof value === 'object' && value !== null) {
         expect(Object.isFrozen(value)).toBe(true);
         Object.values(value).forEach(visit);
       }
     };
-    visit(exampleToolCatalog);
+    visit(timelogToolCatalog);
     expect(() => {
-      (exampleToolCatalog[0] as { name: string }).name = 'changed';
+      (timelogToolCatalog[0] as { name: string }).name = 'changed';
     }).toThrow(TypeError);
   });
 
   it('declares exactly the upstream requests each tool makes', async () => {
-    process.env.EXAMPLE_ENABLE_WRITES = 'true';
-    for (const entry of exampleToolCatalog) {
+    process.env.TIMELOG_ENABLE_WRITES = 'true';
+    for (const entry of timelogToolCatalog) {
       const input = SAMPLE_INPUTS[entry.name];
       expect(input, `sample input for ${entry.name}`).toBeDefined();
-      const fetchImpl = vi.fn(async () => Response.json({ ok: true }));
-      const gw = createExampleGateway({ apiKey: KEY_A, baseUrl: BASE, fetchImpl: fetchImpl as unknown as typeof fetch });
-      const result = await gw.callTool(entry.name, input!);
+      // One answer that every read can use, shaped as a TimeLog TAFSingle.
+      const fetchImpl = vi.fn(async () => Response.json({ Properties: { TaskID: 5, Date: '2026-11-03T00:00:00', Hours: 1, Name: 'P' } }));
+      const gw = createTimelogGateway({ apiKey: KEY_A, baseUrl: BASE, fetchImpl: fetchImpl as unknown as typeof fetch });
+      const result = await gw.callTool(entry.name, input! as never);
       expect(result.isError, texts(result).join(' ')).toBeUndefined();
 
       const declared = entry.upstream.map(op => ({
         method: op.method,
-        path: op.path.replace(/\{(\w+)\}/g, (_, name: string) => encodeURIComponent(input![name] ?? '')),
+        path: op.path.replace(/\{(\w+)\}/g, (_, name: string) => encodeURIComponent(String(input![name] ?? ''))),
       }));
       const made = (fetchImpl.mock.calls as unknown as Array<[string, RequestInit]>).map(([url, init]) => ({
         method: init.method,
