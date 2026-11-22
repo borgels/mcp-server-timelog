@@ -10,6 +10,7 @@ import {
 } from './timelog/policy.js';
 import { ConfigError } from './config-env.js';
 import { failureMetadata, formatUnknownError, redactDeep, SecretRedactor, vendorRequestId, type FailureMetadata } from './errors.js';
+import { ActAsRefusedError, actAsRefusalInForm, normaliseActAs, type ActAs, type ActAsRefusal } from './act-as.js';
 import { fixedOutputs, withheldResult } from './fallbacks.js';
 import { admitsKey, keyRefusedText, leaksSecret, sealedError } from './key-admission.js';
 import {
@@ -42,9 +43,34 @@ import {
  * `policy` the instance uses the environment, as the MCP server does. Limits
  * (timeouts, retries) are still read from the environment and apply to every
  * instance.
+ *
+ * Acting as a person: a host that verified the person a call is made for
+ * passes `actAs: { email }` in the call context (src/act-as.ts). Every change
+ * then first finds exactly one active TimeLog user with that email (every page
+ * of GET /api/v1/user, as the token's user) and is made for that user:
+ * register_time sends their UserID, update_time changes only their own
+ * registration, and create_task and create_project (which have no user field
+ * in TimeLog and are recorded as created by the token's user) run only when
+ * the person is the token's user (CREATED_BY_KEY_USER_ONLY otherwise). No such
+ * user, more than one, or a user list TimeLog does not give whole: nothing is
+ * sent, and the result has `actAsRefused: 'no_user'`. TimeLog
+ * refusing the user list (403): `actAsRefused: 'not_permitted'`. A malformed
+ * `actAs` refuses the call (`invalid`). TimeLog's period reads of time have no
+ * user parameter, so with a person they run only when the person is the
+ * token's user (OWN_TIME_ONLY otherwise), and get_time_registration returns
+ * only the person's own registration. Other reads run as the token's user.
+ * The email is never written to the audit or returned. Without `actAs` every
+ * call runs as the token's own user.
  */
 
 export type { AuditSink, InstancePolicy } from './timelog/policy.js';
+export { ACT_AS_REFUSALS, ACT_AS_TEXTS } from './act-as.js';
+export { CREATED_BY_KEY_USER_ONLY, NOT_OWN_REGISTRATION, OTHER_EMPLOYEE, OWN_TIME_ONLY } from './timelog/act-as-texts.js';
+
+/** The person a call is made for (GatewayCallContext.actAs; see src/act-as.ts). */
+export type GatewayActAs = ActAs;
+/** Why a call was not made as the person: `invalid` actAs, `no_user` in TimeLog, or the token is `not_permitted` to. */
+export type GatewayActAsRefusal = ActAsRefusal;
 
 export type GatewayRiskLevel = 'read' | 'write' | 'destructive';
 export type GatewayJsonValue = string | number | boolean | null | GatewayJsonValue[] | { [key: string]: GatewayJsonValue };
@@ -72,6 +98,11 @@ export interface GatewayToolResult {
   isError?: boolean;
   /** On an error result from the upstream API only: its HTTP status and request id (see GatewayFailure). */
   failure?: GatewayFailure;
+  /**
+   * On an error result only: the call was not made, because it could not be made as the person in `actAs`. The text
+   * is fixed and never holds the email.
+   */
+  actAsRefused?: GatewayActAsRefusal;
 }
 
 export type GatewayCallContext = CallContext;
@@ -256,12 +287,21 @@ function buildGateway(options: TimelogGatewayOptions, apiKey: string) {
   const redactor: SecretRedactor = client.redactor;
   // Every call in a scope of its own, with or without a host policy: a call made from inside another
   // instance's call (its audit sink or its fetch) never runs under that instance's policy, sink or redactor.
-  const underPolicy = <T>(work: () => T): T => runInCallScope(policy ? { policy, redactor } : { redactor }, work);
+  const underPolicy = <T>(work: () => T, actAs?: Readonly<ActAs>): T =>
+    runInCallScope({ ...(policy ? { policy } : {}), redactor, ...(actAs ? { actAs } : {}) }, work);
 
   return {
     /** Tools enabled on this instance (the policy's or TIMELOG_DISABLED_TOOLS' disabled tools are left out). */
     tools: underPolicy(() => timelogGatewayTools.filter(tool => !isToolDisabled(tool.name))),
     callTool(toolName: string, input: GatewayJsonObject = {}, context?: GatewayCallContext): Promise<GatewayToolResult> {
+      // The person to act as, checked before anything else: a malformed one refuses the call, so a change never runs as
+      // the token's own user by mistake.
+      let actAs: Readonly<ActAs> | undefined;
+      try {
+        actAs = normaliseActAs(context?.actAs);
+      } catch {
+        return Promise.resolve(actAsRefused('invalid'));
+      }
       // The whole result, text and data (keys included, numbers by their string form), with this instance's secrets
       // redacted: upstream data can echo the key, and so can an error. Redacted first, as data and depth-limited, and
       // only then copied as JSON, so no key is serialised and no deep value can exhaust the stack.
@@ -279,6 +319,7 @@ function buildGateway(options: TimelogGatewayOptions, apiKey: string) {
             return leaksSecret(final, redactor) ? withheldResult() : final;
           },
         ),
+        actAs,
       );
     },
   };
@@ -309,9 +350,15 @@ function buildGateway(options: TimelogGatewayOptions, apiKey: string) {
       const text = tool.returnsUpstreamContent ? `${tool.summary} ${UNTRUSTED_CONTENT_NOTE}` : tool.summary;
       return jsonResult(text, data);
     } catch (error) {
+      if (error instanceof ActAsRefusedError) return actAsRefused(error.refusal);
       return errorResult(formatUnknownError(error, redactor), failureMetadata(error));
     }
   }
+}
+
+/** A call not made as the person: our fixed text and the refusal, nothing else. */
+function actAsRefused(refusal: ActAsRefusal): GatewayToolResult {
+  return { ...errorResult(new ActAsRefusedError(refusal).message), actAsRefused: refusal };
 }
 
 /** One gateway instance, as returned by createTimelogGateway. */
@@ -353,7 +400,10 @@ function errorResult(text: string, failure?: GatewayFailure): GatewayToolResult 
  * still in the form of one (redaction can have changed it). Anything else is dropped, never passed on.
  */
 function withFailureInForm(result: GatewayToolResult): GatewayToolResult {
-  const { failure, ...rest } = result;
+  const { failure, actAsRefused: refusal, ...withoutRefusal } = result;
+  // The refusal stays only on an error result, and only as one of ours.
+  const kept = result.isError ? actAsRefusalInForm(refusal) : undefined;
+  const rest: GatewayToolResult = kept ? { ...withoutRefusal, actAsRefused: kept } : withoutRefusal;
   if (!result.isError || failure === undefined || failure === null || typeof failure !== 'object') return rest;
   const status = failure.httpStatus;
   if (typeof status !== 'number' || !Number.isInteger(status) || status < 100 || status > 599) return rest;

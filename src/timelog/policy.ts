@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { ConfigError, readEnvBoolean, readEnvList } from '../config-env.js';
+import type { ActAs } from '../act-as.js';
 import type { SecretRedactor } from '../errors.js';
 
 /**
@@ -56,6 +57,8 @@ export interface ResolvedInstancePolicy {
 export interface CallScope {
   readonly policy?: ResolvedInstancePolicy;
   readonly redactor?: SecretRedactor;
+  /** The person the call is made for (the host's actAs, checked; see src/act-as.ts). Never audited. */
+  readonly actAs?: Readonly<ActAs>;
 }
 
 const callScope = new AsyncLocalStorage<CallScope>();
@@ -102,6 +105,11 @@ export function runInCallScope<T>(scope: CallScope, work: () => T): T {
 /** The host's policy of the call in progress, or undefined (the environment applies). */
 export function currentInstancePolicy(): ResolvedInstancePolicy | undefined {
   return callScope.getStore()?.policy;
+}
+
+/** The person the call in progress is made for (the host's actAs), or undefined: the key's own user. */
+export function currentActAs(): Readonly<ActAs> | undefined {
+  return callScope.getStore()?.actAs;
 }
 
 /** The redactor of the instance whose call is in progress, if any. */

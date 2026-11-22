@@ -12,6 +12,8 @@ import { assertAuditLogWritable, auditTarget, newRequestId, writeAuditEvent } fr
 import { readOnlyClient, type UpstreamClient } from '../timelog/client.js';
 import { formatUnknownError, type SecretRedactor } from '../errors.js';
 import * as api from '../timelog/api.js';
+import { assertCreatorIsPerson, assertOwnTimeReadable, NOT_OWN_REGISTRATION, OTHER_EMPLOYEE, personUserId } from '../timelog/act-as-user.js';
+import type { ActAs } from '../act-as.js';
 import { checkInputPolicy, checkToolPolicy, isToolDisabled, redactInScope, runInCallScope, validatePolicyConfig } from '../timelog/policy.js';
 
 /** TimeLog's identifiers are 32-bit integers. */
@@ -26,6 +28,11 @@ const pageShape = {
 /** Hours in one registration: more than 0 and at most 24, in hundredths. */
 const hoursSchema = z.number().gt(0).max(24).multipleOf(0.01);
 const MAX_PERIOD_DAYS = 366;
+
+/** The lookup of the person in actAs (src/timelog/act-as-user.ts), first in every tool that acts as them. */
+const FIND_PERSON: UpstreamOperation = { access: 'read', method: 'GET', path: '/api/v1/user' };
+/** The key's own user, compared with the person before a period read (TimeLog reads time only for the key's user). */
+const KEY_USER: UpstreamOperation = { access: 'read', method: 'GET', path: '/api/v1/user/me' };
 
 function daysBetween(from: string, to: string): number {
   return (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000;
@@ -268,40 +275,49 @@ export const TIMELOG_TOOLS: ToolDefinition[] = [
     name: 'timelog_list_time_registrations',
     title: 'List Time Registrations (TimeLog)',
     description:
-      "List the time registrations of the token's user in a period: date, hours, billable hours, customer, project, task, comment and approval status. Absence is shown as absence, without its reason.",
+      "List the time registrations of the token's user in a period: date, hours, billable hours, customer, project, task, comment and approval status. Absence is shown as absence, without its reason. Acting as a person, only when the person is the token's user (TimeLog reads time only for the token's user).",
     inputShape: periodShape(),
     annotations: READ_TOOL_ANNOTATIONS,
     returnsUpstreamContent: true,
     summary: 'Listed time registrations.',
-    upstream: [{ access: 'read', method: 'GET', path: '/api/v1/time-tracking-item/get-by-date' }],
+    upstream: [FIND_PERSON, KEY_USER, { access: 'read', method: 'GET', path: '/api/v1/time-tracking-item/get-by-date' }],
     handler: async (client, input) => {
       checkPeriod(input);
+      await assertOwnTimeReadable(client);
       return api.listTimeRegistrations(client, input);
     },
   }),
   defineTool({
     name: 'timelog_get_time_registration',
     title: 'Get Time Registration (TimeLog)',
-    description: 'Fetch one time registration by its TimeRegistrationID. Absence is shown as absence, without its reason.',
+    description:
+      "Fetch one time registration by its TimeRegistrationID. Absence is shown as absence, without its reason. Acting as a person, only the person's own registration.",
     inputShape: { timeRegistrationId: idSchema.describe('TimeRegistrationID.') },
     annotations: READ_TOOL_ANNOTATIONS,
     returnsUpstreamContent: true,
     summary: 'Fetched time registration.',
-    upstream: [{ access: 'read', method: 'GET', path: '/api/v1/time-tracking-item/{timeRegistrationId}' }],
-    handler: async (client, input) => api.getTimeRegistration(client, input),
+    upstream: [FIND_PERSON, { access: 'read', method: 'GET', path: '/api/v1/time-tracking-item/{timeRegistrationId}' }],
+    handler: async (client, input) => {
+      const person = await personUserId(client);
+      const found = (await api.getTimeRegistration(client, input)) as { registration: Record<string, unknown> | null };
+      // Acting as a person: their own registration only, never another user's.
+      if (person !== undefined && found.registration?.UserID !== person) throw new Error(NOT_OWN_REGISTRATION);
+      return found;
+    },
   }),
   defineTool({
     name: 'timelog_time_summary',
     title: 'Time Summary (TimeLog)',
     description:
-      "Report of the token's user's hours in a period: total, billable, absence as one sum, and hours by project, by task and by day.",
+      "Report of the token's user's hours in a period: total, billable, absence as one sum, and hours by project, by task and by day. Acting as a person, only when the person is the token's user (TimeLog reads time only for the token's user).",
     inputShape: periodShape(),
     annotations: READ_TOOL_ANNOTATIONS,
     returnsUpstreamContent: true,
     summary: 'Summarised time.',
-    upstream: [{ access: 'read', method: 'GET', path: '/api/v1/time-tracking-item/get-by-date' }],
+    upstream: [FIND_PERSON, KEY_USER, { access: 'read', method: 'GET', path: '/api/v1/time-tracking-item/get-by-date' }],
     handler: async (client, input) => {
       checkPeriod(input);
+      await assertOwnTimeReadable(client);
       return api.timeSummary(client, input);
     },
   }),
@@ -328,7 +344,7 @@ export const TIMELOG_TOOLS: ToolDefinition[] = [
     name: 'timelog_register_time',
     title: 'Register Time (TimeLog)',
     description:
-      "Register hours on a task on a day. Without employeeId the time is the token's user's own; with employeeId it is registered for that employee, if the token's user may do so in TimeLog. Find the task with timelog_list_tasks first.",
+      "Register hours on a task on a day. Without employeeId the time is the token's user's own; with employeeId it is registered for that employee, if the token's user may do so in TimeLog. Acting as a person, the time is the person's and employeeId must be left out (or be the person). Find the task with timelog_list_tasks first.",
     inputShape: {
       taskId: idSchema.describe('TaskID.'),
       date: dateSchema.describe('The day, YYYY-MM-DD.'),
@@ -340,14 +356,20 @@ export const TIMELOG_TOOLS: ToolDefinition[] = [
     annotations: APPEND_TOOL_ANNOTATIONS,
     returnsUpstreamContent: true,
     summary: 'Registered time.',
-    upstream: [{ access: 'write', method: 'POST', path: '/api/v1/time-registration' }],
-    handler: async (client, input) => api.registerTime(client, input),
+    upstream: [FIND_PERSON, { access: 'write', method: 'POST', path: '/api/v1/time-registration' }],
+    handler: async (client, input) => {
+      const person = await personUserId(client);
+      if (person === undefined) return api.registerTime(client, input);
+      // Acting as a person: the time is theirs (UserID), never another employee's.
+      if (input.employeeId !== undefined && input.employeeId !== person) throw new Error(OTHER_EMPLOYEE);
+      return api.registerTime(client, { ...input, employeeId: person });
+    },
   }),
   defineTool({
     name: 'timelog_update_time',
     title: 'Correct Time Registration (TimeLog)',
     description:
-      "Correct one of the token's user's time registrations: hours, day, task, comment or billable. Fields not given stay as they are. Absence cannot be changed here.",
+      "Correct one of the token's user's time registrations (acting as a person: one of the person's own): hours, day, task, comment or billable. Fields not given stay as they are. Absence cannot be changed here.",
     inputShape: {
       timeRegistrationId: idSchema.describe('TimeRegistrationID.'),
       hours: hoursSchema.optional().describe('New hours.'),
@@ -360,6 +382,7 @@ export const TIMELOG_TOOLS: ToolDefinition[] = [
     returnsUpstreamContent: true,
     summary: 'Corrected time registration.',
     upstream: [
+      FIND_PERSON,
       { access: 'read', method: 'GET', path: '/api/v1/time-tracking-item/{timeRegistrationId}' },
       { access: 'write', method: 'POST', path: '/api/v1/time-registration/update-time' },
     ],
@@ -373,14 +396,15 @@ export const TIMELOG_TOOLS: ToolDefinition[] = [
       ) {
         throw new Error('Give at least one field to change.');
       }
-      return api.updateTime(client, input);
+      const person = await personUserId(client);
+      return api.updateTime(client, person === undefined ? input : { ...input, ownerId: person });
     },
   }),
   defineTool({
     name: 'timelog_create_task',
     title: 'Create Task (TimeLog)',
     description:
-      'Create a task on a project, or a sub-task under parentTaskId. Optional number, description, dates, budgeted hours, billable and task type. No prices.',
+      "Create a task on a project, or a sub-task under parentTaskId. Optional number, description, dates, budgeted hours, billable and task type. No prices. Acting as a person, only when the person is the token's user (TimeLog records the token's user as creator).",
     inputShape: {
       projectId: idSchema.describe('ProjectID.'),
       name: z.string().trim().min(1).max(200).describe('Task name.'),
@@ -397,16 +421,23 @@ export const TIMELOG_TOOLS: ToolDefinition[] = [
     returnsUpstreamContent: true,
     summary: 'Created task.',
     upstream: [
+      FIND_PERSON,
+      KEY_USER,
       { access: 'write', method: 'POST', path: '/api/v1/task' },
       { access: 'write', method: 'POST', path: '/api/v1/task/create-sub-task' },
     ],
-    handler: async (client, input) => api.createTask(client, input),
+    // TimeLog has no user field on a task and records the token's user as its creator: acting as a person, it runs only
+    // when the person is the token's user (CREATED_BY_KEY_USER_ONLY otherwise), never as the token's user for someone else.
+    handler: async (client, input) => {
+      await assertCreatorIsPerson(client);
+      return api.createTask(client, input);
+    },
   }),
   defineTool({
     name: 'timelog_create_project',
     title: 'Create Project (TimeLog)',
     description:
-      'Create a project for a customer from a project template (timelog_list_project_templates). Optional number, description, project manager and dates.',
+      "Create a project for a customer from a project template (timelog_list_project_templates). Optional number, description, project manager and dates. Acting as a person, only when the person is the token's user (TimeLog records the token's user as creator).",
     inputShape: {
       templateId: idSchema.describe('ProjectTemplateID.'),
       name: z.string().trim().min(1).max(200).describe('Project name.'),
@@ -420,8 +451,12 @@ export const TIMELOG_TOOLS: ToolDefinition[] = [
     annotations: APPEND_TOOL_ANNOTATIONS,
     returnsUpstreamContent: true,
     summary: 'Created project.',
-    upstream: [{ access: 'write', method: 'POST', path: '/api/v1/project/create-from-template' }],
-    handler: async (client, input) => api.createProject(client, input),
+    upstream: [FIND_PERSON, KEY_USER, { access: 'write', method: 'POST', path: '/api/v1/project/create-from-template' }],
+    // As create_task: no user field, so acting as a person it runs only when the person is the token's user.
+    handler: async (client, input) => {
+      await assertCreatorIsPerson(client);
+      return api.createProject(client, input);
+    },
   }),
 ];
 
@@ -483,6 +518,11 @@ export interface CallContext {
   caller?: string;
   /** Request id to reuse in audit events, for correlation with the host's own log. */
   requestId?: string;
+  /**
+   * The person to act as (gateway only, src/act-as.ts): a change is made for their own TimeLog user, found by the
+   * email, or not at all. Never written to the audit.
+   */
+  actAs?: ActAs;
 }
 
 function contextString(value: unknown, max: number): string | undefined {

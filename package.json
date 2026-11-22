@@ -1,6 +1,6 @@
 {
   "name": "mcp-server-timelog",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "mcpName": "io.github.borgels/mcp-server-timelog",
   "description": "Unofficial MCP server for the TimeLog REST API: projects, tasks, customers, employees and time registrations, with a personal access token.",
   "type": "module",
