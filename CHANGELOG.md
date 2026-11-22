@@ -10,9 +10,11 @@
   sends their `UserID` (an `employeeId` for someone else is refused,
   `OTHER_EMPLOYEE`), `update_time` changes only their own registration
   (`NOT_OWN_REGISTRATION`), and `create_task` and `create_project`, which have
-  no user field in TimeLog, run only when the person has a user (TimeLog
-  records the token's user as creator). No such user, more than one, or a
-  user list longer than 20 pages of 500: nothing is sent,
+  no user field in TimeLog and are recorded as created by the token's user,
+  run only when the person is the token's user (`CREATED_BY_KEY_USER_ONLY`
+  otherwise). No such user, more than one, a user list longer than 20 pages
+  of 500, or one TimeLog does not give whole (no paging, an empty page before
+  the last, a record count that does not match): nothing is sent,
   `actAsRefused: 'no_user'`. TimeLog refusing the user list (403):
   `actAsRefused: 'not_permitted'`. A malformed `actAs`: `invalid`. Never a
   fallback to the token's user for a change; the email is never audited or

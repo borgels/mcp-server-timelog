@@ -50,8 +50,10 @@ import {
  * of GET /api/v1/user, as the token's user) and is made for that user:
  * register_time sends their UserID, update_time changes only their own
  * registration, and create_task and create_project (which have no user field
- * in TimeLog) run only when the person has a user. No such user, or more than
- * one: nothing is sent, and the result has `actAsRefused: 'no_user'`. TimeLog
+ * in TimeLog and are recorded as created by the token's user) run only when
+ * the person is the token's user (CREATED_BY_KEY_USER_ONLY otherwise). No such
+ * user, more than one, or a user list TimeLog does not give whole: nothing is
+ * sent, and the result has `actAsRefused: 'no_user'`. TimeLog
  * refusing the user list (403): `actAsRefused: 'not_permitted'`. A malformed
  * `actAs` refuses the call (`invalid`). TimeLog's period reads of time have no
  * user parameter, so with a person they run only when the person is the
@@ -63,7 +65,7 @@ import {
 
 export type { AuditSink, InstancePolicy } from './timelog/policy.js';
 export { ACT_AS_REFUSALS, ACT_AS_TEXTS } from './act-as.js';
-export { NOT_OWN_REGISTRATION, OTHER_EMPLOYEE, OWN_TIME_ONLY } from './timelog/act-as-texts.js';
+export { CREATED_BY_KEY_USER_ONLY, NOT_OWN_REGISTRATION, OTHER_EMPLOYEE, OWN_TIME_ONLY } from './timelog/act-as-texts.js';
 
 /** The person a call is made for (GatewayCallContext.actAs; see src/act-as.ts). */
 export type GatewayActAs = ActAs;

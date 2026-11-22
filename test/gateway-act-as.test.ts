@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  CREATED_BY_KEY_USER_ONLY,
   createTimelogGateway,
   NOT_OWN_REGISTRATION,
   OTHER_EMPLOYEE,
@@ -30,8 +31,9 @@ afterEach(() => {
 });
 
 const single = (properties: Record<string, unknown>) => ({ Properties: properties, Links: [] });
-const list = (entities: Array<Record<string, unknown>>, page = 1, pages = 1) => ({
-  Properties: { TotalRecord: String(entities.length), TotalPage: String(pages), PageNumber: String(page) },
+/** A TAFList page; `total` is the record count of the whole list (TotalRecord), by default this page's. */
+const list = (entities: Array<Record<string, unknown>>, page = 1, pages = 1, total = entities.length) => ({
+  Properties: { TotalRecord: String(total), TotalPage: String(pages), PageNumber: String(page) },
   Entities: entities.map(properties => ({ Properties: properties, Links: [] })),
   Links: [],
 });
@@ -111,7 +113,7 @@ describe('changes as the person in actAs', () => {
   it('reads the user list to its last page, and refuses a list longer than it reads', async () => {
     const paged = upstream({
       'GET /api/v1/user': query =>
-        query.$page === '1' ? { body: list([KEY_USER], 1, 2) } : { body: list([METTE], 2, 2) },
+        query.$page === '1' ? { body: list([KEY_USER], 1, 2, 2) } : { body: list([METTE], 2, 2, 2) },
       'POST /api/v1/time-registration': { body: single(REGISTRATION(7)) },
     });
     const ok = await paged.gw.callTool('register_time', { taskId: 5, date: '2026-11-03', hours: 2 }, asMette);
@@ -119,12 +121,36 @@ describe('changes as the person in actAs', () => {
     expect(paged.calls.filter(call => call.path === '/api/v1/user').map(call => call.query.$page)).toEqual(['1', '2']);
 
     const long = upstream({
-      'GET /api/v1/user': query => ({ body: list([Number(query.$page) === LOOKUP_MAX_PAGES ? METTE : OTHER], Number(query.$page), LOOKUP_MAX_PAGES + 1) }),
+      'GET /api/v1/user': query => ({
+        body: list([Number(query.$page) === LOOKUP_MAX_PAGES ? METTE : OTHER], Number(query.$page), LOOKUP_MAX_PAGES + 1, LOOKUP_MAX_PAGES + 1),
+      }),
     });
     const refused = await long.gw.callTool('register_time', { taskId: 5, date: '2026-11-03', hours: 2 }, asMette);
     expect(refused).toMatchObject({ isError: true, actAsRefused: 'no_user' });
     expect(long.calls.filter(call => call.path === '/api/v1/user')).toHaveLength(LOOKUP_MAX_PAGES);
     expect(writes(long.calls)).toEqual([]);
+  });
+
+  it('accepts a match only when the whole list was read: no early stop on an empty page, a missing count or a short count', async () => {
+    const answers: Array<(page: number) => unknown> = [
+      // A match on page 1, an empty page 2, and TimeLog announcing three pages: a second match could be on page 3.
+      page => (page === 1 ? list([METTE], 1, 3, 3) : list([], page, 3, 3)),
+      // No paging information on a TAFList.
+      () => ({ Entities: [{ Properties: METTE }], Links: [] }),
+      // The last page, but fewer records read than TimeLog counts.
+      () => list([METTE], 1, 1, 2),
+      // A match on the first page and the same address again on the last.
+      page => (page === 1 ? list([METTE, KEY_USER], 1, 2, 3) : list([{ ...METTE, UserID: 9 }], 2, 2, 3)),
+    ];
+    for (const answer of answers) {
+      const { gw, calls } = upstream({ 'GET /api/v1/user': query => ({ body: answer(Number(query.$page)) }) });
+      const result = await gw.callTool('register_time', { taskId: 5, date: '2026-11-03', hours: 2 }, asMette);
+      expect(result).toMatchObject({ isError: true, actAsRefused: 'no_user' });
+      expect(writes(calls)).toEqual([]);
+    }
+    // A plain array is the whole list.
+    const plain = upstream({ 'GET /api/v1/user': { body: [KEY_USER, METTE] }, 'POST /api/v1/time-registration': { body: single(REGISTRATION(7)) } });
+    expect((await plain.gw.callTool('register_time', { taskId: 5, date: '2026-11-03', hours: 2 }, asMette)).isError).toBeUndefined();
   });
 
   it('is not_permitted when TimeLog will not show the key user the users', async () => {
@@ -172,21 +198,34 @@ describe('changes as the person in actAs', () => {
     expect(writes(own.calls)[0]?.body).toMatchObject({ TimeRegistrationID: 77, Hours: 3 });
   });
 
-  it('create_task and create_project run only for a person with a user (TimeLog records the key user as creator)', async () => {
-    const none = upstream({ 'GET /api/v1/user': { body: list([KEY_USER]) } });
-    for (const [tool, input] of [
+  it("create_task and create_project run only when the person is the key's user (TimeLog records the key user as creator)", async () => {
+    const creations = [
       ['create_task', { projectId: 1, name: 'Ny opgave' }],
       ['create_project', { templateId: 2, name: 'Nyt projekt', customerId: 3 }],
-    ] as const) {
-      const result = await none.gw.callTool(tool, input, asMette);
-      expect(result).toMatchObject({ isError: true, actAsRefused: 'no_user' });
+    ] as const;
+    const none = upstream({ 'GET /api/v1/user': { body: list([KEY_USER]) } });
+    for (const [tool, input] of creations) {
+      expect(await none.gw.callTool(tool, input, asMette)).toMatchObject({ isError: true, actAsRefused: 'no_user' });
     }
     expect(writes(none.calls)).toEqual([]);
 
-    const found = upstream({ ...USERS, 'POST /api/v1/task': { body: single({ TaskID: 12, Name: 'Ny opgave' }) } });
-    const ok = await found.gw.callTool('create_task', { projectId: 1, name: 'Ny opgave' }, asMette);
+    // The person has a user, but the key is another user's: never created in the key user's name for her.
+    const other = upstream({ ...USERS, 'GET /api/v1/user/me': { body: single(KEY_USER) } });
+    for (const [tool, input] of creations) {
+      const result = await other.gw.callTool(tool, input, asMette);
+      expect(result).toMatchObject({ isError: true, content: [{ text: CREATED_BY_KEY_USER_ONLY }] });
+      expect(result.actAsRefused).toBeUndefined();
+    }
+    expect(writes(other.calls)).toEqual([]);
+
+    const own = upstream({
+      ...USERS,
+      'GET /api/v1/user/me': { body: single(METTE) },
+      'POST /api/v1/task': { body: single({ TaskID: 12, Name: 'Ny opgave' }) },
+    });
+    const ok = await own.gw.callTool('create_task', { projectId: 1, name: 'Ny opgave' }, asMette);
     expect(ok.isError).toBeUndefined();
-    expect(writes(found.calls).map(call => call.path)).toEqual(['/api/v1/task']);
+    expect(writes(own.calls).map(call => call.path)).toEqual(['/api/v1/task']);
   });
 
   it('without actAs every call runs as the key user, as before, with no lookup', async () => {

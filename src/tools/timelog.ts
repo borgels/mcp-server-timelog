@@ -12,7 +12,7 @@ import { assertAuditLogWritable, auditTarget, newRequestId, writeAuditEvent } fr
 import { readOnlyClient, type UpstreamClient } from '../timelog/client.js';
 import { formatUnknownError, type SecretRedactor } from '../errors.js';
 import * as api from '../timelog/api.js';
-import { assertOwnTimeReadable, NOT_OWN_REGISTRATION, OTHER_EMPLOYEE, personUserId } from '../timelog/act-as-user.js';
+import { assertCreatorIsPerson, assertOwnTimeReadable, NOT_OWN_REGISTRATION, OTHER_EMPLOYEE, personUserId } from '../timelog/act-as-user.js';
 import type { ActAs } from '../act-as.js';
 import { checkInputPolicy, checkToolPolicy, isToolDisabled, redactInScope, runInCallScope, validatePolicyConfig } from '../timelog/policy.js';
 
@@ -404,7 +404,7 @@ export const TIMELOG_TOOLS: ToolDefinition[] = [
     name: 'timelog_create_task',
     title: 'Create Task (TimeLog)',
     description:
-      'Create a task on a project, or a sub-task under parentTaskId. Optional number, description, dates, budgeted hours, billable and task type. No prices.',
+      "Create a task on a project, or a sub-task under parentTaskId. Optional number, description, dates, budgeted hours, billable and task type. No prices. Acting as a person, only when the person is the token's user (TimeLog records the token's user as creator).",
     inputShape: {
       projectId: idSchema.describe('ProjectID.'),
       name: z.string().trim().min(1).max(200).describe('Task name.'),
@@ -422,13 +422,14 @@ export const TIMELOG_TOOLS: ToolDefinition[] = [
     summary: 'Created task.',
     upstream: [
       FIND_PERSON,
+      KEY_USER,
       { access: 'write', method: 'POST', path: '/api/v1/task' },
       { access: 'write', method: 'POST', path: '/api/v1/task/create-sub-task' },
     ],
-    // TimeLog has no user field on a task: acting as a person, the person must have a user, and the token's user is
-    // recorded as its creator.
+    // TimeLog has no user field on a task and records the token's user as its creator: acting as a person, it runs only
+    // when the person is the token's user (CREATED_BY_KEY_USER_ONLY otherwise), never as the token's user for someone else.
     handler: async (client, input) => {
-      await personUserId(client);
+      await assertCreatorIsPerson(client);
       return api.createTask(client, input);
     },
   }),
@@ -436,7 +437,7 @@ export const TIMELOG_TOOLS: ToolDefinition[] = [
     name: 'timelog_create_project',
     title: 'Create Project (TimeLog)',
     description:
-      'Create a project for a customer from a project template (timelog_list_project_templates). Optional number, description, project manager and dates.',
+      "Create a project for a customer from a project template (timelog_list_project_templates). Optional number, description, project manager and dates. Acting as a person, only when the person is the token's user (TimeLog records the token's user as creator).",
     inputShape: {
       templateId: idSchema.describe('ProjectTemplateID.'),
       name: z.string().trim().min(1).max(200).describe('Project name.'),
@@ -450,10 +451,10 @@ export const TIMELOG_TOOLS: ToolDefinition[] = [
     annotations: APPEND_TOOL_ANNOTATIONS,
     returnsUpstreamContent: true,
     summary: 'Created project.',
-    upstream: [FIND_PERSON, { access: 'write', method: 'POST', path: '/api/v1/project/create-from-template' }],
-    // As create_task: no user field; the person must have a user, and the token's user is recorded as the creator.
+    upstream: [FIND_PERSON, KEY_USER, { access: 'write', method: 'POST', path: '/api/v1/project/create-from-template' }],
+    // As create_task: no user field, so acting as a person it runs only when the person is the token's user.
     handler: async (client, input) => {
-      await personUserId(client);
+      await assertCreatorIsPerson(client);
       return api.createProject(client, input);
     },
   }),

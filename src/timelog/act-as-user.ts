@@ -1,11 +1,11 @@
 import { ActAsRefusedError } from '../act-as.js';
 import { TimelogHttpError } from '../errors.js';
-import { OWN_TIME_ONLY } from './act-as-texts.js';
+import { CREATED_BY_KEY_USER_ONLY, OWN_TIME_ONLY } from './act-as-texts.js';
 import { API, unwrapList, unwrapSingle } from './api.js';
 import type { UpstreamClient } from './client.js';
 import { currentActAs } from './policy.js';
 
-export { NOT_OWN_REGISTRATION, OTHER_EMPLOYEE, OWN_TIME_ONLY } from './act-as-texts.js';
+export { CREATED_BY_KEY_USER_ONLY, NOT_OWN_REGISTRATION, OTHER_EMPLOYEE, OWN_TIME_ONLY } from './act-as-texts.js';
 
 /** Users read per page in the lookup, and the most pages read. A longer list is refused, never cut short. */
 export const LOOKUP_PAGE_SIZE = 500;
@@ -24,7 +24,8 @@ function userId(user: Record<string, unknown>): number | undefined {
  * The TimeLog UserID of the person the host names in actAs, or undefined when the call has no person (it runs as the
  * key's own user). Found as the key's user: every page of GET /api/v1/user, and exactly one active user (IsActive not
  * false) whose Email, trimmed and compared case-insensitively, is the address. None, more than one, or a list longer
- * than LOOKUP_MAX_PAGES pages (so a second user may be missing) is ActAsRefusedError('no_user'); TimeLog refusing the
+ * than LOOKUP_MAX_PAGES pages or one TimeLog does not give whole (so a second user may be missing) is
+ * ActAsRefusedError('no_user'); TimeLog refusing the
  * list (403: the key's user may not see users) is ActAsRefusedError('not_permitted'). Nothing else is sent before it.
  *
  * The email is sent to TimeLog nowhere: the list is read whole and compared here. It is not kept, audited or returned.
@@ -33,6 +34,7 @@ export async function personUserId(client: UpstreamClient): Promise<number | und
   const person = currentActAs();
   if (!person) return undefined;
   const ids: number[] = [];
+  let read = 0;
   for (let page = 1; ; page += 1) {
     if (page > LOOKUP_MAX_PAGES) throw new ActAsRefusedError('no_user');
     let body: unknown;
@@ -43,6 +45,7 @@ export async function personUserId(client: UpstreamClient): Promise<number | und
       throw error;
     }
     const { items, paging } = unwrapList(body);
+    read += items.length;
     for (const item of items) {
       // Inactive users are left out; a user without the flag counts as active, as in list_employees.
       if (!isObject(item) || item.IsActive === false) continue;
@@ -50,9 +53,17 @@ export async function personUserId(client: UpstreamClient): Promise<number | und
       const id = userId(item);
       if (id !== undefined) ids.push(id);
     }
+    // The list counts as read whole only when TimeLog says so: a plain array, or the last page of a TAFList whose pages
+    // and record count agree with what was read. An answer without paging, an empty page before the last one, or a
+    // count that does not match is refused: a second user with the address could be missing.
+    if (Array.isArray(body)) break;
     const pages = paging.totalPages;
-    // Without paging information (a plain list), on the last page or on an empty page, the list was read whole.
-    if (pages === undefined || page >= pages || items.length === 0) break;
+    if (pages === undefined || paging.totalRecords === undefined) throw new ActAsRefusedError('no_user');
+    if (page >= pages) {
+      if (page !== pages || read !== paging.totalRecords) throw new ActAsRefusedError('no_user');
+      break;
+    }
+    if (items.length === 0) throw new ActAsRefusedError('no_user');
   }
   if (ids.length !== 1) throw new ActAsRefusedError('no_user');
   return ids[0];
@@ -72,4 +83,15 @@ export async function assertOwnTimeReadable(client: UpstreamClient): Promise<voi
   const person = await personUserId(client);
   if (person === undefined) return;
   if ((await keyUserId(client)) !== person) throw new Error(OWN_TIME_ONLY);
+}
+
+/**
+ * A creation made for the person where TimeLog has no user field (a task, a project): TimeLog records the key's own
+ * user as the creator, so with a person it runs only when the person is the key's user. Otherwise
+ * CREATED_BY_KEY_USER_ONLY; nothing is sent. Never made as the key's user for someone else.
+ */
+export async function assertCreatorIsPerson(client: UpstreamClient): Promise<void> {
+  const person = await personUserId(client);
+  if (person === undefined) return;
+  if ((await keyUserId(client)) !== person) throw new Error(CREATED_BY_KEY_USER_ONLY);
 }
