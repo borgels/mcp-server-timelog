@@ -1,6 +1,7 @@
 import { nestedFailuresAsStatus, nestedFailureText } from '../errors.js';
 import { encodePathParam } from '../path-params.js';
 import type { QueryValue, UpstreamClient } from './client.js';
+import { NOT_OWN_REGISTRATION } from './act-as-texts.js';
 
 /**
  * Calls to the TimeLog REST API (v1), relative to the account's address
@@ -484,6 +485,8 @@ export interface UpdateTimeInput {
   taskId?: number;
   comment?: string;
   billable?: boolean;
+  /** Acting as a person: the registration must be this user's (UserID), else nothing is changed. */
+  ownerId?: number;
 }
 
 /**
@@ -496,6 +499,9 @@ export async function updateTime(client: UpstreamClient, input: UpdateTimeInput)
   const current = unwrapSingle(await client.get(`${API}/time-tracking-item/${id}`));
   if (!isObject(current)) {
     throw new Error('The time registration could not be read; nothing was changed.');
+  }
+  if (input.ownerId !== undefined && current.UserID !== input.ownerId) {
+    throw new Error(NOT_OWN_REGISTRATION);
   }
   if (typeof current.AbsenceCodeID === 'number' && current.AbsenceCodeID > 0) {
     throw new Error('This is an absence registration; it cannot be changed with this tool. Nothing was changed.');

@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.4.0
+
+- Gateway: changes are made as the person the host names. A host passes
+  `actAs: { email }` (the template's shared shape, `src/act-as.ts`) in the
+  call context; every write tool then first finds exactly one active TimeLog
+  user with that email (every page of `GET /api/v1/user`, as the token's user,
+  compared case-insensitively) and is made for that user: `register_time`
+  sends their `UserID` (an `employeeId` for someone else is refused,
+  `OTHER_EMPLOYEE`), `update_time` changes only their own registration
+  (`NOT_OWN_REGISTRATION`), and `create_task` and `create_project`, which have
+  no user field in TimeLog, run only when the person has a user (TimeLog
+  records the token's user as creator). No such user, more than one, or a
+  user list longer than 20 pages of 500: nothing is sent,
+  `actAsRefused: 'no_user'`. TimeLog refusing the user list (403):
+  `actAsRefused: 'not_permitted'`. A malformed `actAs`: `invalid`. Never a
+  fallback to the token's user for a change; the email is never audited or
+  returned. The catalog's write tools declare the lookup first in `upstream`.
+- Reads with `actAs`: TimeLog's period reads of time
+  (`time-tracking-item/get-by-date`) have no user parameter and return only
+  the token user's own time, so `list_time_registrations` and `time_summary`
+  run only when the person is the token's user (`GET /api/v1/user/me`), and
+  are refused with `OWN_TIME_ONLY` otherwise. `get_time_registration` returns
+  only the person's own registration. Other reads run as the token's user.
+
 ## 0.3.1
 
 - Licensor and copyright holder corrected to Borgels Services ApS in `LICENSE`,
